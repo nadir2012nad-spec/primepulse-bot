@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 # ── CONFIGURATION ──────────────────────────────────────────
 BOT_TOKEN = "8462196837:AAF8me80EJ-3Qg9_gZ87NtC8WTok-CHpq40"
-CHAT_ID = "8362599550"
+CHAT_ID = 8362599550
 MIN_LIQUIDITY_USD = 5000
 MAX_AGE_MINUTES = 5
 CHECK_INTERVAL_SECONDS = 30
