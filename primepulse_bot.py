@@ -76,6 +76,8 @@ class TokenCandidate:
     outreach_next_action: str = ""
     indexed_keywords: str = ""
     auto_tags: str = ""
+    project_category: str = "Unclassified"
+    ai_visibility_score: int = 0
 
 def clean_text(v: Any) -> str: return "" if v is None else str(v).strip()
 def clean_float(v: Any) -> float:
@@ -106,7 +108,7 @@ def fingerprint(t: TokenCandidate) -> str:
 
 def http_get_json(url: str, headers=None, timeout=20):
     try:
-        r = requests.get(url, timeout=timeout, headers=headers or {"Accept":"application/json","User-Agent":"CryptalystsPrimePulse/6.0"})
+        r = requests.get(url, timeout=timeout, headers=headers or {"Accept":"application/json","User-Agent":"CryptalystsPrimePulse/7.0"})
         if not r.ok:
             print(f"[GET JSON ERROR] {r.status_code} {url} :: {r.text[:250]}")
             return None
@@ -118,7 +120,7 @@ def http_get_html(url: str, timeout=12):
     url = normalize_url(url)
     if not valid_url(url): return "", url
     try:
-        r = requests.get(url, timeout=timeout, allow_redirects=True, headers={"Accept":"text/html,application/xhtml+xml,*/*","User-Agent":"Mozilla/5.0 (compatible; CryptalystsBot/6.0; +https://cryptalysts.com)"})
+        r = requests.get(url, timeout=timeout, allow_redirects=True, headers={"Accept":"text/html,application/xhtml+xml,*/*","User-Agent":"Mozilla/5.0 (compatible; CryptalystsBot/7.0; +https://cryptalysts.com)"})
         ctype = r.headers.get("content-type","").lower()
         if not r.ok or ("text/html" not in ctype and "application/xhtml" not in ctype): return "", r.url
         return r.text[:650000], r.url
@@ -127,7 +129,7 @@ def http_get_html(url: str, timeout=12):
         return "", url
 def http_post_json(url: str, payload: Dict[str, Any], auth: Tuple[str,str]):
     try:
-        r = requests.post(url, json=payload, auth=auth, timeout=35, headers={"Accept":"application/json","Content-Type":"application/json","User-Agent":"CryptalystsPrimePulse/6.0"})
+        r = requests.post(url, json=payload, auth=auth, timeout=35, headers={"Accept":"application/json","Content-Type":"application/json","User-Agent":"CryptalystsPrimePulse/7.0"})
         if not r.ok:
             print(f"[POST ERROR] {r.status_code} :: {r.text[:800]}")
             return None
@@ -316,7 +318,7 @@ def gecko_candidate(pool: Dict[str,Any], inc: Dict[str,Dict[str,Any]], network: 
     )
 def source_gecko_new_pools() -> List[TokenCandidate]:
     out = []
-    headers = {"Accept":"application/json;version=20230302","User-Agent":"CryptalystsPrimePulse/6.0"}
+    headers = {"Accept":"application/json;version=20230302","User-Agent":"CryptalystsPrimePulse/7.0"}
     for network in GECKO_NETWORKS:
         data = http_get_json(f"https://api.geckoterminal.com/api/v2/networks/{network}/new_pools?include=base_token,quote_token", headers=headers)
         if isinstance(data, dict):
@@ -434,6 +436,36 @@ def build_auto_tags(t: TokenCandidate) -> str:
         tags.append("email-found")
     return ", ".join([x for x in tags if x])
 
+
+def classify_project_category(t: TokenCandidate) -> str:
+    text = " ".join([t.name, t.symbol, t.website, t.analysis_notes]).lower()
+    rules = [
+        ("AI", ["ai", "agent", "gpt", "neural", "intelligence", "bot"]),
+        ("DeFi", ["defi", "swap", "yield", "staking", "farm", "liquidity", "dao"]),
+        ("Meme", ["doge", "pepe", "inu", "cat", "frog", "meme", "wojak", "bonk"]),
+        ("Gaming", ["game", "gaming", "play", "nft", "metaverse"]),
+        ("Infrastructure", ["chain", "layer", "protocol", "node", "rollup", "bridge", "infra"]),
+        ("Trading", ["trade", "trading", "signals", "perp", "bot"]),
+        ("Launchpad", ["launch", "presale", "fairlaunch", "ido"]),
+        ("NSFW", ["onlyfans", "nsfw", "adult"]),
+    ]
+    for label, keys in rules:
+        if any(k in text for k in keys):
+            return label
+    return "Unclassified"
+
+def compute_ai_visibility_score(t: TokenCandidate) -> int:
+    base = int((t.quality_score * 0.25) + (t.trending_score * 0.25) + (t.visibility_score * 0.25) + (t.lead_score * 0.25))
+    if t.project_category in ("AI", "Meme", "DeFi"):
+        base += 5
+    if t.contact_priority == "HIGH":
+        base += 8
+    elif t.contact_priority == "MEDIUM":
+        base += 4
+    if t.logo_url and t.banner_url:
+        base += 4
+    return max(0, min(100, base))
+
 def compute_business_scores(t: TokenCandidate) -> TokenCandidate:
     # Lead score = commercial contact + seriousness.
     lead = 0
@@ -478,8 +510,10 @@ def compute_business_scores(t: TokenCandidate) -> TokenCandidate:
     t.branding_score = max(0, min(100, (20 if t.website else 0) + (20 if t.logo_url else 0) + (20 if t.banner_url else 0) + (20 if t.twitter else 0) + (20 if t.telegram else 0)))
     t.growth_score = max(0, min(100, int((t.volume_h1 / 1000) + (t.liquidity_usd / 5000))))
 
+    t.project_category = classify_project_category(t)
+    t.ai_visibility_score = compute_ai_visibility_score(t)
     t.indexed_keywords = build_indexed_keywords(t)
-    t.auto_tags = build_auto_tags(t)
+    t.auto_tags = build_auto_tags(t) + ", " + t.project_category.lower()
     return t
 
 def build_outreach_templates(t: TokenCandidate) -> TokenCandidate:
@@ -544,6 +578,8 @@ def publish(t: TokenCandidate) -> Tuple[bool,str]:
         "last_seen":datetime.now(timezone.utc).isoformat(),
         "indexed_keywords":t.indexed_keywords,
         "auto_tags":t.auto_tags,
+        "project_category":t.project_category,
+        "ai_visibility_score":t.ai_visibility_score,
     }
     res = http_post_json(WP_API_URL, payload, auth=(WP_USERNAME, WP_APP_PASSWORD))
     if not res:
@@ -607,7 +643,7 @@ def process(candidates):
     print(f"[SUMMARY] published={published} skipped={skipped}")
 def run_once():
     print("============================================================")
-    print("PrimePulse / Cryptalysts Discovery Engine v0.6")
+    print("PrimePulse / Cryptalysts Discovery Engine v0.7")
     print(f"UTC: {datetime.now(timezone.utc).isoformat()}")
     print(f"Min liquidity: ${MIN_LIQUIDITY_USD:,.0f}")
     print(f"Max age: {MAX_AGE_MINUTES} minutes")
