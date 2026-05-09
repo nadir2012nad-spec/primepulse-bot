@@ -2,7 +2,7 @@ name: PrimePulse Discovery Engine
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -32,7 +32,7 @@ jobs:
           MIN_LIQUIDITY_USD: ${{ vars.MIN_LIQUIDITY_USD }}
           MAX_AGE_MINUTES: ${{ vars.MAX_AGE_MINUTES }}
           REQUIRE_SOCIAL: ${{ vars.REQUIRE_SOCIAL }}
-          RUN_ONCE: ${{ vars.RUN_ONCE }}
+          RUN_ONCE: "true"
 
         run: |
           python primepulse_bot.py
