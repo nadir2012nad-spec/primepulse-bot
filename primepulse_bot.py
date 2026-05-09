@@ -106,7 +106,7 @@ def fingerprint(t: TokenCandidate) -> str:
 
 def http_get_json(url: str, headers=None, timeout=20):
     try:
-        r = requests.get(url, timeout=timeout, headers=headers or {"Accept":"application/json","User-Agent":"CryptalystsPrimePulse/5.0"})
+        r = requests.get(url, timeout=timeout, headers=headers or {"Accept":"application/json","User-Agent":"CryptalystsPrimePulse/6.0"})
         if not r.ok:
             print(f"[GET JSON ERROR] {r.status_code} {url} :: {r.text[:250]}")
             return None
@@ -118,7 +118,7 @@ def http_get_html(url: str, timeout=12):
     url = normalize_url(url)
     if not valid_url(url): return "", url
     try:
-        r = requests.get(url, timeout=timeout, allow_redirects=True, headers={"Accept":"text/html,application/xhtml+xml,*/*","User-Agent":"Mozilla/5.0 (compatible; CryptalystsBot/5.0; +https://cryptalysts.com)"})
+        r = requests.get(url, timeout=timeout, allow_redirects=True, headers={"Accept":"text/html,application/xhtml+xml,*/*","User-Agent":"Mozilla/5.0 (compatible; CryptalystsBot/6.0; +https://cryptalysts.com)"})
         ctype = r.headers.get("content-type","").lower()
         if not r.ok or ("text/html" not in ctype and "application/xhtml" not in ctype): return "", r.url
         return r.text[:650000], r.url
@@ -127,7 +127,7 @@ def http_get_html(url: str, timeout=12):
         return "", url
 def http_post_json(url: str, payload: Dict[str, Any], auth: Tuple[str,str]):
     try:
-        r = requests.post(url, json=payload, auth=auth, timeout=35, headers={"Accept":"application/json","Content-Type":"application/json","User-Agent":"CryptalystsPrimePulse/5.0"})
+        r = requests.post(url, json=payload, auth=auth, timeout=35, headers={"Accept":"application/json","Content-Type":"application/json","User-Agent":"CryptalystsPrimePulse/6.0"})
         if not r.ok:
             print(f"[POST ERROR] {r.status_code} :: {r.text[:800]}")
             return None
@@ -316,7 +316,7 @@ def gecko_candidate(pool: Dict[str,Any], inc: Dict[str,Dict[str,Any]], network: 
     )
 def source_gecko_new_pools() -> List[TokenCandidate]:
     out = []
-    headers = {"Accept":"application/json;version=20230302","User-Agent":"CryptalystsPrimePulse/5.0"}
+    headers = {"Accept":"application/json;version=20230302","User-Agent":"CryptalystsPrimePulse/6.0"}
     for network in GECKO_NETWORKS:
         data = http_get_json(f"https://api.geckoterminal.com/api/v2/networks/{network}/new_pools?include=base_token,quote_token", headers=headers)
         if isinstance(data, dict):
@@ -494,7 +494,7 @@ def build_outreach_templates(t: TokenCandidate) -> TokenCandidate:
         f"Your token {title} was detected and indexed on Cryptalysts as an early-stage listing.\\n\\n"
         f"You can claim/update the listing here: {claim_url}\\n"
         f"If you want stronger visibility, featured placement is available here: {feature_url}\\n\\n"
-        f"Cryptalysts tracks early token visibility, community signals and public market discovery.\\n"
+        f"Cryptalysts tracks early token visibility and public discovery.\\n"
     )
 
     t.outreach_x = (
@@ -546,9 +546,13 @@ def publish(t: TokenCandidate) -> Tuple[bool,str]:
         "auto_tags":t.auto_tags,
     }
     res = http_post_json(WP_API_URL, payload, auth=(WP_USERNAME, WP_APP_PASSWORD))
-    if not res: return False, "No response from WordPress"
-    if res.get("ok"): return True, ("duplicate: " if res.get("duplicate") else "created: ") + clean_text(res.get("url"))
-    return False, json.dumps(res)[:700]
+    if not res:
+        return False, "WordPress empty response"
+    if res.get("ok"):
+        if res.get("duplicate"):
+            return True, "duplicate_updated: " + clean_text(res.get("url"))
+        return True, "created: " + clean_text(res.get("url"))
+    return False, "WordPress error: " + json.dumps(res)[:700]
 def fmt_money(v): return f"${v:,.0f}" if v else "N/A"
 def telegram_message(t: TokenCandidate, wp_status: str) -> str:
     age = f"{t.age_minutes:.1f} min" if t.age_minutes is not None else "N/A"
@@ -588,14 +592,22 @@ def process(candidates):
             continue
         seen_fingerprints.add(fp)
         wp_ok, wp_status = publish(t)
-        if wp_ok: published += 1; print(f"[PUBLISHED] {t.chain} {t.symbol} :: {wp_status}")
-        else: print(f"[WP FAILED] {t.chain} {t.symbol} :: {wp_status}")
+        if wp_ok:
+            if wp_status.startswith("duplicate_updated:"):
+                print(f"[DUPLICATE UPDATED - NO TELEGRAM] {t.chain} {t.symbol} :: {wp_status}")
+                skipped += 1
+                time.sleep(0.5)
+                continue
+            published += 1
+            print(f"[PUBLISHED] {t.chain} {t.symbol} :: {wp_status}")
+        else:
+            print(f"[WP FAILED] {t.chain} {t.symbol} :: {wp_status}")
         send_telegram(telegram_message(t, wp_status))
         time.sleep(1)
     print(f"[SUMMARY] published={published} skipped={skipped}")
 def run_once():
     print("============================================================")
-    print("PrimePulse / Cryptalysts Discovery Engine v0.5")
+    print("PrimePulse / Cryptalysts Discovery Engine v0.6")
     print(f"UTC: {datetime.now(timezone.utc).isoformat()}")
     print(f"Min liquidity: ${MIN_LIQUIDITY_USD:,.0f}")
     print(f"Max age: {MAX_AGE_MINUTES} minutes")
