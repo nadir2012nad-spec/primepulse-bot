@@ -1,1 +1,1 @@
-requests\ntelethon\n
+requests
