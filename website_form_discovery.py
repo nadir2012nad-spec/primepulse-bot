@@ -10,11 +10,10 @@ WP_APP_PASSWORD=os.getenv("WP_APP_PASSWORD","")
 BOT_TOKEN=os.getenv("BOT_TOKEN","")
 CHAT_ID=os.getenv("CHAT_ID","")
 MAX_FORM_DISCOVERY=int(os.getenv("MAX_FORM_DISCOVERY","30"))
-UA="Mozilla/5.0 CryptalystsFormDiscovery/2.0-STRICT"
+UA="Mozilla/5.0 CryptalystsFormDiscovery/2.1-STRICT-NEUTRAL"
 
 CONTACT_PATHS=["/contact","/contact-us","/contacts","/support","/help","/business","/partnership","/partners","/inquiry"]
 CONTACT_HINTS=["contact","contact-us","support","help","business","partnership","partner","inquiry","enquiry","request"]
-
 BLOCKED_DOMAINS=["x.com","twitter.com","t.me","telegram.me","discord.gg","discord.com","dexscreener.com","dextools.io","pump.fun","birdeye.so","solscan.io","etherscan.io","bscscan.com","basescan.org","polygonscan.com","geckoterminal.com","coingecko.com","coinmarketcap.com","medium.com","youtube.com","youtu.be","instagram.com","facebook.com","reddit.com","github.com","linktr.ee","beacons.ai"]
 BAD_HINTS=["newsletter","subscribe","signup","sign-up","sign_up","waitlist","updates","notify","early-access","early_access","mailchimp","klaviyo","privy","omnisend"]
 FORM_PLATFORMS=["typeform.com","tally.so","docs.google.com/forms","airtable.com","formspree.io","hubspot","hsforms","jotform.com","paperform.co"]
@@ -50,7 +49,7 @@ def is_bad_url_or_html(u,html=""):
     low=((u or "")+" "+(html or "")[:20000]).lower()
     return any(x in low for x in BAD_HINTS)
 
-def send_tg(text):
+def tg(text):
     if not BOT_TOKEN or not CHAT_ID:
         print("[TG SKIP] missing BOT_TOKEN or CHAT_ID");return
     try:
@@ -59,7 +58,7 @@ def send_tg(text):
     except Exception as e:print("[TG ERROR]",repr(e))
 
 def notify(item,form,typ):
-    msg=f"""🧾 <b>STRICT WEBSITE CONTACT FORM FOUND</b>
+    tg(f"""🧾 <b>STRICT WEBSITE CONTACT FORM FOUND</b>
 
 <b>Token:</b> {item.get('title','Unknown')}
 <b>Type:</b> {typ}
@@ -75,15 +74,14 @@ def notify(item,form,typ):
 
 <b>Action:</b>
 Website Form Queue → Copy Message → Submit → Mark Submitted.
-"""
-    send_tg(msg)
+""")
 
 def wp_targets():
-    r=requests.get(f"{WP_BASE}/wp-json/cryptalysts/v1/form-discovery-targets",params={"limit":MAX_FORM_DISCOVERY},auth=(WP_USERNAME,WP_APP_PASSWORD),headers={"User-Agent":UA,"Accept":"application/json"},timeout=30)
+    r=requests.get(f"{WP_BASE}/wp-json/cryptalysts/v1/wf-targets",params={"limit":MAX_FORM_DISCOVERY},auth=(WP_USERNAME,WP_APP_PASSWORD),headers={"User-Agent":UA,"Accept":"application/json","Cache-Control":"no-cache"},timeout=30)
     print("[WP TARGETS]",r.status_code,r.text[:600]);r.raise_for_status();return r.json().get("items",[])
 
 def wp_update(post_id,form_url="",form_type="",status="",notes=""):
-    r=requests.post(f"{WP_BASE}/wp-json/cryptalysts/v1/form-discovery-update",json={"post_id":post_id,"form_url":form_url,"form_type":form_type,"status":status,"notes":notes[:600]},auth=(WP_USERNAME,WP_APP_PASSWORD),headers={"User-Agent":UA,"Accept":"application/json","Content-Type":"application/json"},timeout=30)
+    r=requests.post(f"{WP_BASE}/wp-json/cryptalysts/v1/wf-update",json={"post_id":post_id,"form_url":form_url,"form_type":form_type,"status":status,"notes":notes[:600]},auth=(WP_USERNAME,WP_APP_PASSWORD),headers={"User-Agent":UA,"Accept":"application/json","Content-Type":"application/json","Cache-Control":"no-cache"},timeout=30)
     print("[WP UPDATE]",post_id,r.status_code,r.text[:400]);return r.ok
 
 def get_html(u):
@@ -137,9 +135,8 @@ def discover(item):
         print("[SKIP INVALID WEBSITE]",item.get("title"),site)
         return wp_update(post_id,status="NO_VALID_CONTACT_FORM",notes="Skipped social/dex/explorer/invalid site")
 
-    pages=candidates(site)
     linked=[]
-    for page in pages:
+    for page in candidates(site):
         html,final=get_html(page)
         if not html:continue
         if page_has_contact_form(html,final):
