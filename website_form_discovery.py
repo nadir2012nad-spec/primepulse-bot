@@ -1,3 +1,4 @@
+
 import os
 import re
 import requests
@@ -10,7 +11,7 @@ WP_APP_PASSWORD = os.getenv("WP_APP_PASSWORD", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 CHAT_ID = os.getenv("CHAT_ID", "")
 MAX_FORM_DISCOVERY = int(os.getenv("MAX_FORM_DISCOVERY", "30"))
-UA = "Mozilla/5.0 CryptalystsFormDiscovery/1.3"
+UA = "Mozilla/5.0 CryptalystsFormDiscovery/1.4"
 
 CONTACT_PATHS = ["", "/contact", "/contact-us", "/contacts", "/support", "/help", "/about", "/team", "/links"]
 
@@ -72,7 +73,12 @@ def send_telegram(text):
     try:
         r = requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True},
+            json={
+                "chat_id": CHAT_ID,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
             timeout=20,
         )
         print("[TELEGRAM]", r.status_code, r.text[:300])
@@ -117,9 +123,19 @@ def wp_targets():
 def wp_update(post_id, form_url="", form_type="", status="", notes=""):
     r = requests.post(
         f"{WP_BASE}/wp-json/cryptalysts/v1/form-discovery-update",
-        json={"post_id": post_id, "form_url": form_url, "form_type": form_type, "status": status, "notes": notes[:600]},
+        json={
+            "post_id": post_id,
+            "form_url": form_url,
+            "form_type": form_type,
+            "status": status,
+            "notes": notes[:600],
+        },
         auth=(WP_USERNAME, WP_APP_PASSWORD),
-        headers={"User-Agent": UA, "Accept": "application/json", "Content-Type": "application/json"},
+        headers={
+            "User-Agent": UA,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
         timeout=30,
     )
     print("[WP UPDATE]", post_id, r.status_code, r.text[:400])
@@ -130,7 +146,9 @@ def get_html(u):
         return "", u
     try:
         r = requests.get(
-            u, timeout=15, allow_redirects=True,
+            u,
+            timeout=15,
+            allow_redirects=True,
             headers={"User-Agent": UA, "Accept": "text/html,application/xhtml+xml,*/*"},
         )
         ct = r.headers.get("content-type", "").lower()
@@ -146,9 +164,14 @@ def get_html(u):
 
 def links(html, base):
     out = []
-    hrefs = re.findall(r\"href=[\\\"']([^\\\"']+)[\\\"']\", html, re.I)
-    srcs = re.findall(r\"src=[\\\"']([^\\\"']+)[\\\"']\", html, re.I)
-    for raw in hrefs + srcs:
+
+    # Safe regex split into two simple patterns to avoid quote escaping issues.
+    hrefs_double = re.findall(r'href="([^"]+)"', html, re.I)
+    hrefs_single = re.findall(r"href='([^']+)'", html, re.I)
+    srcs_double = re.findall(r'src="([^"]+)"', html, re.I)
+    srcs_single = re.findall(r"src='([^']+)'", html, re.I)
+
+    for raw in hrefs_double + hrefs_single + srcs_double + srcs_single:
         u = unescape(raw.strip())
         if not u or u.startswith(("javascript:", "#", "mailto:", "tel:")):
             continue
@@ -156,16 +179,21 @@ def links(html, base):
         if is_blocked_url(full):
             continue
         out.append(full)
+
     return list(dict.fromkeys(out))
 
 def detect_form(html, page):
     low = html.lower()
-    if re.search(r"<form\\b", html, re.I) and any(x in low for x in ["contact", "message", "email", "name", "submit"]):
+    if re.search(r"<form\b", html, re.I) and any(
+        x in low for x in ["contact", "message", "email", "name", "submit"]
+    ):
         return page, "HTML_FORM"
+
     for u in links(html, page):
         lu = u.lower()
         if any(p in lu for p in FORM_PLATFORMS):
             return u, "FORM_PLATFORM"
+
     return "", ""
 
 def candidate_pages(site):
@@ -186,18 +214,26 @@ def mark_found(item, form_url, form_type, notes):
 def discover(item):
     post_id = item["post_id"]
     website = item.get("website", "")
+
     if not valid_project_site(website):
         print(f"[SKIP INVALID WEBSITE] {item.get('title')} :: {website}")
-        return wp_update(post_id, status="NO_FORM", notes="Skipped: website is social/dex/explorer or invalid project domain")
+        return wp_update(
+            post_id,
+            status="NO_FORM",
+            notes="Skipped: website is social/dex/explorer or invalid project domain",
+        )
 
     found = []
+
     for page in candidate_pages(website):
         html, final = get_html(page)
         if not html:
             continue
+
         form, typ = detect_form(html, final)
         if form and not is_blocked_url(form):
             return mark_found(item, form, typ, f"Form found on {final}")
+
         for u in links(html, final):
             lu = u.lower()
             if any(x in lu for x in ["/contact", "/contact-us", "/support", "/help"]) and valid_project_site(u):
@@ -207,24 +243,32 @@ def discover(item):
         html, final = get_html(u)
         if not html:
             continue
+
         form, typ = detect_form(html, final)
         if form and not is_blocked_url(form):
             return mark_found(item, form, typ, f"Form found on linked page {final}")
 
-    return wp_update(post_id, status="NO_FORM", notes="No contact form found after scan")
+    return wp_update(
+        post_id,
+        status="NO_FORM",
+        notes="No contact form found after scan",
+    )
 
 def main():
     if not WP_USERNAME or not WP_APP_PASSWORD:
         raise SystemExit("Missing WP credentials")
+
     items = wp_targets()
     if not items:
         print("No websites to scan for forms.")
         return
+
     updates = 0
     for it in items:
         print("[SCAN]", it.get("title"), it.get("website"))
         if discover(it):
             updates += 1
+
     print(f"Done. Scanned {len(items)}. Updates {updates}.")
 
 if __name__ == "__main__":
