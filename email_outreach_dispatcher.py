@@ -62,7 +62,10 @@ def send_email(to_email,subject,body):
         if SMTP_USE_TLS:
             server.starttls()
         server.login(SMTP_USERNAME,SMTP_PASSWORD)
-        server.sendmail(SMTP_FROM_EMAIL,[to_email],msg.as_string())
+        server.sendmail(
+    SMTP_FROM_EMAIL,
+    [to_email, SMTP_FROM_EMAIL],
+    msg.as_string())
 
 def main():
     require_env()
