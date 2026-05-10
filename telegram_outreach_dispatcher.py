@@ -17,7 +17,7 @@ TELEGRAM_SESSION = os.getenv("TELEGRAM_SESSION", "")
 MAX_SENDS = int(os.getenv("MAX_TELEGRAM_SENDS", "3"))
 PRIORITY = os.getenv("OUTREACH_PRIORITY", "HIGH")
 SLEEP_BETWEEN_SENDS = int(os.getenv("SLEEP_BETWEEN_SENDS", "35"))
-UA = "CryptalystsOutreachDispatcher/1.0"
+UA = "CryptalystsOutreachDispatcher/1.1"
 
 def wp_get_leads():
     url = f"{WP_BASE}/wp-json/cryptalysts/v1/outreach-leads"
@@ -59,6 +59,25 @@ def validate_env():
     if missing:
         raise SystemExit("Missing secrets/env: " + ", ".join(missing))
 
+def build_claim_message(lead):
+    title = lead.get("title", "your project")
+    listing_url = lead.get("listing_url", "").strip()
+
+    return f"""Hi team — {title} has been detected and indexed on Cryptalysts as an early-stage token listing.
+
+Your live listing:
+{listing_url}
+
+You can now claim and upgrade this listing for free to unlock:
+• visibility boosts
+• featured placement access
+• ranking improvements
+• traffic exposure tools
+
+Claim your listing for free here:
+{listing_url}?claim=1
+"""
+
 async def main():
     validate_env()
     leads = wp_get_leads()
@@ -81,13 +100,14 @@ async def main():
             post_id = lead["post_id"]
             tg = lead["telegram"]
             title = lead["title"]
-            message = lead["message"]
+            message = build_claim_message(lead)
 
             print(f"[SEND TRY] {title} -> {tg}")
 
             try:
                 entity = await client.get_entity(tg)
                 await client.send_message(entity, message, link_preview=False)
+
                 wp_update(post_id, "CONTACTED", sent_to=tg)
                 sent += 1
                 print(f"[SENT] {title} -> {tg}")
