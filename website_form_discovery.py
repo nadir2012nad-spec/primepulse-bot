@@ -10,14 +10,32 @@ WP_APP_PASSWORD = os.getenv("WP_APP_PASSWORD", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 CHAT_ID = os.getenv("CHAT_ID", "")
 MAX_FORM_DISCOVERY = int(os.getenv("MAX_FORM_DISCOVERY", "30"))
-UA = "Mozilla/5.0 CryptalystsFormDiscovery/1.1"
+UA = "Mozilla/5.0 CryptalystsFormDiscovery/1.2"
 
-CONTACT_PATHS = ["", "/contact", "/contact-us", "/contacts", "/support", "/help", "/about", "/team", "/links"]
+CONTACT_PATHS = [
+    "",
+    "/contact",
+    "/contact-us",
+    "/contacts",
+    "/support",
+    "/help",
+    "/about",
+    "/team",
+    "/links",
+]
 
 FORM_PLATFORMS = [
-    "typeform.com", "tally.so", "forms.gle", "docs.google.com/forms",
-    "airtable.com", "formspree.io", "hubspot", "hsforms",
-    "jotform.com", "notion.site", "paperform.co"
+    "typeform.com",
+    "tally.so",
+    "forms.gle",
+    "docs.google.com/forms",
+    "airtable.com",
+    "formspree.io",
+    "hubspot",
+    "hsforms",
+    "jotform.com",
+    "notion.site",
+    "paperform.co",
 ]
 
 def norm(u):
@@ -41,6 +59,7 @@ def send_telegram(text):
     if not BOT_TOKEN or not CHAT_ID:
         print("[TELEGRAM SKIPPED] Missing BOT_TOKEN or CHAT_ID")
         return
+
     try:
         r = requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
@@ -61,7 +80,7 @@ def notify_form_found(item, form_url, form_type):
     listing_url = item.get("listing_url", "")
     website = item.get("website", "")
 
-    msg = f'''🧾 <b>WEBSITE CONTACT FORM FOUND</b>
+    msg = f"""🧾 <b>WEBSITE CONTACT FORM FOUND</b>
 
 <b>Token:</b> {title}
 <b>Type:</b> {form_type}
@@ -77,7 +96,7 @@ def notify_form_found(item, form_url, form_type):
 
 <b>Action:</b>
 Open Website Form Queue → Copy Message → Submit → Mark Submitted.
-'''
+"""
     send_telegram(msg)
 
 def wp_targets():
@@ -134,12 +153,16 @@ def get_html(u):
 
 def links(html, base):
     out = []
-    pattern = r"(?:href|src)=[\\"\\\']([^\\"\\\']+)[\\"\\\']"
-    for raw in re.findall(pattern, html, re.I):
+
+    hrefs = re.findall(r'href=[\"\\\']([^\"\\\']+)[\"\\\']', html, re.I)
+    srcs = re.findall(r'src=[\"\\\']([^\"\\\']+)[\"\\\']', html, re.I)
+
+    for raw in hrefs + srcs:
         u = unescape(raw.strip())
         if not u or u.startswith(("javascript:", "#", "mailto:", "tel:")):
             continue
         out.append(norm(urljoin(base, u)))
+
     return list(dict.fromkeys(out))
 
 def detect_form(html, page):
@@ -164,10 +187,12 @@ def candidate_pages(site):
 
     p = urlparse(site)
     root = f"{p.scheme}://{p.netloc}"
+
     return list(dict.fromkeys([site] + [root + x for x in CONTACT_PATHS]))
 
 def mark_found(item, form_url, form_type, notes):
     post_id = item["post_id"]
+
     ok = wp_update(
         post_id,
         form_url=form_url,
@@ -175,8 +200,10 @@ def mark_found(item, form_url, form_type, notes):
         status="FOUND",
         notes=notes,
     )
+
     if ok:
         notify_form_found(item, form_url, form_type)
+
     return ok
 
 def discover(item):
@@ -185,12 +212,19 @@ def discover(item):
 
     for page in candidate_pages(item["website"]):
         html, final = get_html(page)
+
         if not html:
             continue
 
         form, typ = detect_form(html, final)
+
         if form:
-            return mark_found(item, form, typ, f"Form found on {final}")
+            return mark_found(
+                item,
+                form,
+                typ,
+                f"Form found on {final}",
+            )
 
         for u in links(html, final):
             lu = u.lower()
@@ -199,12 +233,19 @@ def discover(item):
 
     for u in list(dict.fromkeys(found))[:6]:
         html, final = get_html(u)
+
         if not html:
             continue
 
         form, typ = detect_form(html, final)
+
         if form:
-            return mark_found(item, form, typ, f"Form found on linked page {final}")
+            return mark_found(
+                item,
+                form,
+                typ,
+                f"Form found on linked page {final}",
+            )
 
     return wp_update(
         post_id,
@@ -217,13 +258,16 @@ def main():
         raise SystemExit("Missing WP credentials")
 
     items = wp_targets()
+
     if not items:
         print("No websites to scan for forms.")
         return
 
     updates = 0
+
     for it in items:
         print("[SCAN]", it.get("title"), it.get("website"))
+
         if discover(it):
             updates += 1
 
