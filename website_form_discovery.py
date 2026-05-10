@@ -1,4 +1,3 @@
-
 import os
 import re
 import requests
@@ -11,97 +10,83 @@ WP_APP_PASSWORD = os.getenv("WP_APP_PASSWORD", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 CHAT_ID = os.getenv("CHAT_ID", "")
 MAX_FORM_DISCOVERY = int(os.getenv("MAX_FORM_DISCOVERY", "30"))
-UA = "Mozilla/5.0 CryptalystsFormDiscovery/1.4"
+UA = "Mozilla/5.0 CryptalystsFormDiscovery/1.5"
 
-CONTACT_PATHS = ["", "/contact", "/contact-us", "/contacts", "/support", "/help", "/about", "/team", "/links"]
+CONTACT_PATHS = ["", "/contact", "/contact-us", "/contacts", "/support", "/help", "/about", "/team"]
+CONTACT_HINTS = ["contact", "contact-us", "support", "help", "inquiry", "business", "partnership"]
 
 FORM_PLATFORMS = [
-    "typeform.com", "tally.so", "forms.gle", "docs.google.com/forms",
-    "airtable.com", "formspree.io", "hubspot", "hsforms", "jotform.com",
-    "notion.site", "paperform.co"
+    "typeform.com", "tally.so", "docs.google.com/forms", "airtable.com",
+    "formspree.io", "hubspot", "hsforms", "jotform.com", "paperform.co"
+]
+
+BAD_FORM_HINTS = [
+    "newsletter", "subscribe", "signup", "sign-up", "sign_up", "mailchimp",
+    "klaviyo", "campaignmonitor", "privy", "omnisend", "waitlist",
+    "early-access", "updates", "join", "notify"
 ]
 
 BLOCKED_DOMAINS = [
     "x.com", "twitter.com", "t.me", "telegram.me", "discord.gg", "discord.com",
-    "dexscreener.com", "dextools.io", "pump.fun", "birdeye.so",
-    "solscan.io", "etherscan.io", "bscscan.com", "basescan.org", "polygonscan.com",
-    "geckoterminal.com", "coingecko.com", "coinmarketcap.com",
-    "medium.com", "youtube.com", "youtu.be", "instagram.com", "facebook.com",
-    "reddit.com", "github.com", "linktr.ee", "beacons.ai"
+    "dexscreener.com", "dextools.io", "pump.fun", "birdeye.so", "solscan.io",
+    "etherscan.io", "bscscan.com", "basescan.org", "polygonscan.com",
+    "geckoterminal.com", "coingecko.com", "coinmarketcap.com", "medium.com",
+    "youtube.com", "youtu.be", "instagram.com", "facebook.com", "reddit.com",
+    "github.com", "linktr.ee", "beacons.ai"
 ]
 
 def norm(u):
-    u = (u or "").strip()
-    if not u:
-        return ""
-    if u.startswith("//"):
-        return "https:" + u
-    if not u.startswith(("http://", "https://")):
-        return "https://" + u
+    u=(u or "").strip()
+    if not u: return ""
+    if u.startswith("//"): return "https:"+u
+    if not u.startswith(("http://","https://")): return "https://"+u
     return u
 
 def domain_of(u):
-    try:
-        return urlparse(norm(u)).netloc.lower().replace("www.", "")
-    except Exception:
-        return ""
+    try: return urlparse(norm(u)).netloc.lower().replace("www.","")
+    except Exception: return ""
 
 def is_blocked_url(u):
-    d = domain_of(u)
-    if not d:
-        return True
-    return any(d == b or d.endswith("." + b) for b in BLOCKED_DOMAINS)
+    d=domain_of(u)
+    if not d: return True
+    return any(d==b or d.endswith("."+b) for b in BLOCKED_DOMAINS)
 
 def valid_project_site(u):
-    u = norm(u)
+    u=norm(u)
     try:
-        p = urlparse(u)
-        if p.scheme not in ("http", "https"):
-            return False
-        if not p.netloc or "." not in p.netloc:
-            return False
-        if is_blocked_url(u):
-            return False
-        return True
+        p=urlparse(u)
+        return p.scheme in ("http","https") and bool(p.netloc) and "." in p.netloc and not is_blocked_url(u)
     except Exception:
         return False
+
+def is_bad_form_url(u):
+    low=(u or "").lower()
+    return any(x in low for x in BAD_FORM_HINTS)
 
 def send_telegram(text):
     if not BOT_TOKEN or not CHAT_ID:
         print("[TELEGRAM SKIPPED] Missing BOT_TOKEN or CHAT_ID")
         return
     try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json={
-                "chat_id": CHAT_ID,
-                "text": text,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-            },
-            timeout=20,
-        )
-        print("[TELEGRAM]", r.status_code, r.text[:300])
+        r=requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",json={"chat_id":CHAT_ID,"text":text,"parse_mode":"HTML","disable_web_page_preview":True},timeout=20)
+        print("[TELEGRAM]",r.status_code,r.text[:300])
     except Exception as e:
-        print("[TELEGRAM ERROR]", repr(e))
+        print("[TELEGRAM ERROR]",repr(e))
 
 def notify_form_found(item, form_url, form_type):
-    title = item.get("title", "Unknown Token")
-    listing_url = item.get("listing_url", "")
-    website = item.get("website", "")
-    msg = f"""🧾 <b>WEBSITE CONTACT FORM FOUND</b>
+    msg=f"""🧾 <b>WEBSITE CONTACT FORM FOUND</b>
 
-<b>Token:</b> {title}
+<b>Token:</b> {item.get('title','Unknown Token')}
 <b>Type:</b> {form_type}
 
 🌐 <b>Website:</b>
-{website}
+{item.get('website','')}
 
 📝 <b>Form:</b>
 {form_url}
 
 🔗 <b>Listing:</b>
-{listing_url}
+{item.get('listing_url','')}
 
 <b>Action:</b>
 Open Website Form Queue → Copy Message → Submit → Mark Submitted.
@@ -109,167 +94,121 @@ Open Website Form Queue → Copy Message → Submit → Mark Submitted.
     send_telegram(msg)
 
 def wp_targets():
-    r = requests.get(
-        f"{WP_BASE}/wp-json/cryptalysts/v1/form-discovery-targets",
-        params={"limit": MAX_FORM_DISCOVERY},
-        auth=(WP_USERNAME, WP_APP_PASSWORD),
-        headers={"User-Agent": UA, "Accept": "application/json"},
-        timeout=30,
-    )
-    print("[WP TARGETS]", r.status_code, r.text[:600])
+    r=requests.get(f"{WP_BASE}/wp-json/cryptalysts/v1/form-discovery-targets",params={"limit":MAX_FORM_DISCOVERY},auth=(WP_USERNAME,WP_APP_PASSWORD),headers={"User-Agent":UA,"Accept":"application/json"},timeout=30)
+    print("[WP TARGETS]",r.status_code,r.text[:600])
     r.raise_for_status()
-    return r.json().get("items", [])
+    return r.json().get("items",[])
 
-def wp_update(post_id, form_url="", form_type="", status="", notes=""):
-    r = requests.post(
-        f"{WP_BASE}/wp-json/cryptalysts/v1/form-discovery-update",
-        json={
-            "post_id": post_id,
-            "form_url": form_url,
-            "form_type": form_type,
-            "status": status,
-            "notes": notes[:600],
-        },
-        auth=(WP_USERNAME, WP_APP_PASSWORD),
-        headers={
-            "User-Agent": UA,
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        },
-        timeout=30,
-    )
-    print("[WP UPDATE]", post_id, r.status_code, r.text[:400])
+def wp_update(post_id,form_url="",form_type="",status="",notes=""):
+    r=requests.post(f"{WP_BASE}/wp-json/cryptalysts/v1/form-discovery-update",json={"post_id":post_id,"form_url":form_url,"form_type":form_type,"status":status,"notes":notes[:600]},auth=(WP_USERNAME,WP_APP_PASSWORD),headers={"User-Agent":UA,"Accept":"application/json","Content-Type":"application/json"},timeout=30)
+    print("[WP UPDATE]",post_id,r.status_code,r.text[:400])
     return r.ok
 
 def get_html(u):
-    if not valid_project_site(u):
-        return "", u
+    if not valid_project_site(u): return "",u
     try:
-        r = requests.get(
-            u,
-            timeout=15,
-            allow_redirects=True,
-            headers={"User-Agent": UA, "Accept": "text/html,application/xhtml+xml,*/*"},
-        )
-        ct = r.headers.get("content-type", "").lower()
-        final = r.url
-        if is_blocked_url(final):
-            return "", final
-        if not r.ok or ("text/html" not in ct and "application/xhtml" not in ct):
-            return "", final
-        return r.text[:500000], final
+        r=requests.get(u,timeout=15,allow_redirects=True,headers={"User-Agent":UA,"Accept":"text/html,application/xhtml+xml,*/*"})
+        ct=r.headers.get("content-type","").lower()
+        final=r.url
+        if is_blocked_url(final): return "",final
+        if not r.ok or ("text/html" not in ct and "application/xhtml" not in ct): return "",final
+        return r.text[:500000],final
     except Exception as e:
-        print("[HTML ERROR]", u, repr(e))
-        return "", u
+        print("[HTML ERROR]",u,repr(e))
+        return "",u
 
-def links(html, base):
-    out = []
-
-    # Safe regex split into two simple patterns to avoid quote escaping issues.
-    hrefs_double = re.findall(r'href="([^"]+)"', html, re.I)
-    hrefs_single = re.findall(r"href='([^']+)'", html, re.I)
-    srcs_double = re.findall(r'src="([^"]+)"', html, re.I)
-    srcs_single = re.findall(r"src='([^']+)'", html, re.I)
-
-    for raw in hrefs_double + hrefs_single + srcs_double + srcs_single:
-        u = unescape(raw.strip())
-        if not u or u.startswith(("javascript:", "#", "mailto:", "tel:")):
-            continue
-        full = norm(urljoin(base, u))
-        if is_blocked_url(full):
-            continue
+def links(html,base):
+    out=[]
+    hrefs_double=re.findall(r'href="([^"]+)"',html,re.I)
+    hrefs_single=re.findall(r"href='([^']+)'",html,re.I)
+    srcs_double=re.findall(r'src="([^"]+)"',html,re.I)
+    srcs_single=re.findall(r"src='([^']+)'",html,re.I)
+    for raw in hrefs_double+hrefs_single+srcs_double+srcs_single:
+        u=unescape(raw.strip())
+        if not u or u.startswith(("javascript:","#","mailto:","tel:")): continue
+        full=norm(urljoin(base,u))
+        if is_blocked_url(full): continue
         out.append(full)
-
     return list(dict.fromkeys(out))
 
-def detect_form(html, page):
-    low = html.lower()
-    if re.search(r"<form\b", html, re.I) and any(
-        x in low for x in ["contact", "message", "email", "name", "submit"]
-    ):
-        return page, "HTML_FORM"
+def page_is_contact_like(url, html):
+    lowurl=(url or "").lower()
+    low=(html or "").lower()
+    return any(x in lowurl for x in CONTACT_HINTS) or any(x in low for x in ["contact us","get in touch","business inquiries","partnership","send us a message"])
 
-    for u in links(html, page):
-        lu = u.lower()
+def detect_form(html,page):
+    low=html.lower()
+
+    if is_bad_form_url(page):
+        return "",""
+
+    if re.search(r"<form\\b",html,re.I):
+        if page_is_contact_like(page, html) and not any(x in low for x in ["newsletter signup","newsletter_sign_up","subscribe to our newsletter","join our newsletter"]):
+            return page,"HTML_CONTACT_FORM"
+
+    for u in links(html,page):
+        lu=u.lower()
+        if is_bad_form_url(lu):
+            continue
         if any(p in lu for p in FORM_PLATFORMS):
-            return u, "FORM_PLATFORM"
+            if page_is_contact_like(page, html) or any(x in lu for x in CONTACT_HINTS):
+                return u,"CONTACT_FORM_PLATFORM"
 
-    return "", ""
+    return "",""
 
 def candidate_pages(site):
-    site = norm(site)
-    if not valid_project_site(site):
-        return []
-    p = urlparse(site)
-    root = f"{p.scheme}://{p.netloc}"
-    return list(dict.fromkeys([site] + [root + x for x in CONTACT_PATHS]))
+    site=norm(site)
+    if not valid_project_site(site): return []
+    p=urlparse(site)
+    root=f"{p.scheme}://{p.netloc}"
+    return list(dict.fromkeys([site]+[root+x for x in CONTACT_PATHS]))
 
-def mark_found(item, form_url, form_type, notes):
-    post_id = item["post_id"]
-    ok = wp_update(post_id, form_url=form_url, form_type=form_type, status="FOUND", notes=notes)
-    if ok:
-        notify_form_found(item, form_url, form_type)
+def mark_found(item,form_url,form_type,notes):
+    ok=wp_update(item["post_id"],form_url=form_url,form_type=form_type,status="FOUND",notes=notes)
+    if ok: notify_form_found(item,form_url,form_type)
     return ok
 
 def discover(item):
-    post_id = item["post_id"]
-    website = item.get("website", "")
-
+    website=item.get("website","")
     if not valid_project_site(website):
         print(f"[SKIP INVALID WEBSITE] {item.get('title')} :: {website}")
-        return wp_update(
-            post_id,
-            status="NO_FORM",
-            notes="Skipped: website is social/dex/explorer or invalid project domain",
-        )
+        return wp_update(item["post_id"],status="NO_FORM",notes="Skipped: social/dex/explorer or invalid project domain")
 
-    found = []
-
+    found=[]
     for page in candidate_pages(website):
-        html, final = get_html(page)
-        if not html:
-            continue
+        html,final=get_html(page)
+        if not html: continue
 
-        form, typ = detect_form(html, final)
+        form,typ=detect_form(html,final)
         if form and not is_blocked_url(form):
-            return mark_found(item, form, typ, f"Form found on {final}")
+            return mark_found(item,form,typ,f"Contact form found on {final}")
 
-        for u in links(html, final):
-            lu = u.lower()
-            if any(x in lu for x in ["/contact", "/contact-us", "/support", "/help"]) and valid_project_site(u):
+        for u in links(html,final):
+            lu=u.lower()
+            if any(x in lu for x in CONTACT_HINTS) and valid_project_site(u) and not is_bad_form_url(u):
                 found.append(u)
 
-    for u in list(dict.fromkeys(found))[:6]:
-        html, final = get_html(u)
-        if not html:
-            continue
-
-        form, typ = detect_form(html, final)
+    for u in list(dict.fromkeys(found))[:8]:
+        html,final=get_html(u)
+        if not html: continue
+        form,typ=detect_form(html,final)
         if form and not is_blocked_url(form):
-            return mark_found(item, form, typ, f"Form found on linked page {final}")
+            return mark_found(item,form,typ,f"Contact form found on linked page {final}")
 
-    return wp_update(
-        post_id,
-        status="NO_FORM",
-        notes="No contact form found after scan",
-    )
+    return wp_update(item["post_id"],status="NO_FORM",notes="No valid contact form found after scan")
 
 def main():
     if not WP_USERNAME or not WP_APP_PASSWORD:
         raise SystemExit("Missing WP credentials")
-
-    items = wp_targets()
+    items=wp_targets()
     if not items:
         print("No websites to scan for forms.")
         return
-
-    updates = 0
+    updates=0
     for it in items:
-        print("[SCAN]", it.get("title"), it.get("website"))
-        if discover(it):
-            updates += 1
-
+        print("[SCAN]",it.get("title"),it.get("website"))
+        if discover(it): updates+=1
     print(f"Done. Scanned {len(items)}. Updates {updates}.")
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
