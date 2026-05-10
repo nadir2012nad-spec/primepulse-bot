@@ -8,21 +8,26 @@ WP_APP_PASSWORD=os.getenv("WP_APP_PASSWORD","")
 BOT_TOKEN=os.getenv("BOT_TOKEN","")
 PUBLIC_CHANNEL_ID=os.getenv("PUBLIC_CHANNEL_ID","")
 MAX_PUBLIC_FEED_POSTS=int(os.getenv("MAX_PUBLIC_FEED_POSTS","4"))
+MIN_SIGNAL_SCORE=int(os.getenv("MIN_SIGNAL_SCORE","45"))
 PROMO_EVERY_RUN=os.getenv("PROMO_EVERY_RUN","true").lower()=="true"
+
 BRAND="CRYPTALYSTS LIVE SIGNAL"
 PRIMEPULSE="Visibility tools powered by PrimePulseOps.com"
 
 def require_env():
     missing=[k for k,v in {"WP_USERNAME":WP_USERNAME,"WP_APP_PASSWORD":WP_APP_PASSWORD,"BOT_TOKEN":BOT_TOKEN,"PUBLIC_CHANNEL_ID":PUBLIC_CHANNEL_ID}.items() if not v]
-    if missing: raise SystemExit("Missing env/secrets: "+", ".join(missing))
+    if missing:
+        raise SystemExit("Missing env/secrets: "+", ".join(missing))
 
-def esc(s): return str(s or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+def esc(s):
+    return str(s or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
 
 def smart_hashtags(chain,category):
     tags=["#Crypto","#NewToken","#EarlySignal","#Cryptalysts"]
     c=str(chain or "").lower(); cat=str(category or "").lower()
     for k,v in {"solana":"#Solana","base":"#Base","ethereum":"#Ethereum","eth":"#Ethereum","polygon":"#Polygon","bsc":"#BSC","binance":"#BSC","arbitrum":"#Arbitrum"}.items():
-        if k in c: tags.insert(1,v); break
+        if k in c:
+            tags.insert(1,v); break
     if "meme" in cat: tags.append("#MemeCoin")
     if "ai" in cat: tags.append("#AI")
     if "defi" in cat: tags.append("#DeFi")
@@ -30,9 +35,23 @@ def smart_hashtags(chain,category):
     return " ".join(dict.fromkeys(tags))
 
 def wp_get_items():
-    r=requests.get(f"{WP_BASE}/wp-json/cryptalysts/v1/public-feed-items",params={"limit":MAX_PUBLIC_FEED_POSTS},auth=(WP_USERNAME,WP_APP_PASSWORD),timeout=30)
-    print("[WP GET]",r.status_code,r.text[:700]); r.raise_for_status()
-    return r.json().get("items",[])
+    fetch_limit=max(MAX_PUBLIC_FEED_POSTS*5,20)
+    r=requests.get(f"{WP_BASE}/wp-json/cryptalysts/v1/public-feed-items",params={"limit":fetch_limit},auth=(WP_USERNAME,WP_APP_PASSWORD),timeout=30)
+    print("[WP GET]",r.status_code,r.text[:900]); r.raise_for_status()
+    raw_items=r.json().get("items",[])
+    filtered=[]
+    for item in raw_items:
+        score=int(item.get("signal_score") or item.get("ai_visibility_score") or item.get("visibility_score") or 0)
+        if score < MIN_SIGNAL_SCORE:
+            print("[FILTERED LOW SCORE]", item.get("title"), score); continue
+        has_social_fields=any(k in item for k in ("telegram","website","x","twitter","discord"))
+        if has_social_fields:
+            socials=str(item.get("telegram","")).strip() or str(item.get("website","")).strip() or str(item.get("x","")).strip() or str(item.get("twitter","")).strip() or str(item.get("discord","")).strip()
+            if not socials:
+                print("[FILTERED NO SOCIAL]", item.get("title")); continue
+        filtered.append(item)
+        if len(filtered)>=MAX_PUBLIC_FEED_POSTS: break
+    return filtered
 
 def wp_mark(post_id):
     r=requests.post(f"{WP_BASE}/wp-json/cryptalysts/v1/public-feed-mark",json={"post_id":post_id},auth=(WP_USERNAME,WP_APP_PASSWORD),timeout=30)
@@ -45,10 +64,16 @@ def get_font(size,bold=False):
 def download_logo(url):
     if not url: return None
     try:
-        r=requests.get(url,timeout=12,headers={"User-Agent":"CryptalystsPublicFeed/3.0"}); r.raise_for_status()
+        r=requests.get(url,timeout=12,headers={"User-Agent":"CryptalystsPublicFeed/4.0"}); r.raise_for_status()
         return Image.open(io.BytesIO(r.content)).convert("RGBA")
     except Exception as e:
         print("[LOGO ERROR]",repr(e)); return None
+
+def signal_status(score):
+    if score >= 85: return "TOP TRENDING SIGNAL", "#ff3b30"
+    if score >= 70: return "TRENDING SIGNAL", "#f97316"
+    if score >= 55: return "SIGNAL BUILDING", "#8cff00"
+    return "EARLY SIGNAL", "#facc15"
 
 def make_card(item):
     W,H=1200,675
@@ -65,10 +90,10 @@ def make_card(item):
         draw.text((86,y),line,font=f_title,fill="white"); y+=58
     chain=str(item.get("chain") or "Unknown"); category=str(item.get("category") or "Early Token")
     score=int(item.get("signal_score") or item.get("ai_visibility_score") or 0)
-    badge_text,badge_color=("TRENDING SIGNAL","#f97316") if score>=80 else (("SIGNAL BUILDING","#8cff00") if score>=65 else ("EARLY SIGNAL","#facc15"))
+    badge_text,badge_color=signal_status(score)
     draw.rounded_rectangle((86,285,760,475),radius=22,fill="#0d111b",outline="#263244",width=2)
     yy=315
-    for label,value in [("CHAIN",chain),("CATEGORY",category),("FEATURED","SLOT OPEN")]:
+    for label,value in [("CHAIN",chain),("CATEGORY",category),("FEATURED","2 SLOTS LEFT")]:
         draw.text((116,yy),label,font=f_label,fill="#8cff00"); draw.text((330,yy),value,font=f_value,fill="white"); yy+=48
     draw.rounded_rectangle((800,285,1088,475),radius=24,fill="#101827",outline=badge_color,width=3)
     draw.text((838,315),"LIVE SIGNAL",font=f_label,fill="#cbd5e1")
@@ -88,7 +113,7 @@ def token_caption(item):
     score=int(item.get("signal_score") or item.get("ai_visibility_score") or 0)
     listing=item.get("listing_url",""); claim=item.get("claim_url","")
     name_line=f"{title} ({symbol})" if symbol else title
-    signal_line="TRENDING SIGNAL" if score>=80 else ("SIGNAL BUILDING" if score>=65 else "EARLY SIGNAL")
+    signal_line,_=signal_status(score)
     return f'''🚨 <b>NEW TOKEN DETECTED</b>
 
 <b>{name_line}</b>
@@ -97,7 +122,7 @@ def token_caption(item):
 • Category: <b>{category}</b>
 • LIVE SIGNAL SCORE: <b>{score}/100</b>
 • Status: <b>{signal_line}</b>
-• FEATURED: <b>SLOT OPEN</b>
+• FEATURED: <b>2 SLOTS LEFT</b>
 
 🔗 <b>Live listing:</b>
 {listing}
@@ -134,7 +159,7 @@ Cryptalysts indexes early-stage crypto projects before the crowd notices.
 🔗 https://cryptalysts.com
 
 #Crypto #TokenDiscovery #EarlySignal''',
-'''🚀 <b>Featured slots are open.</b>
+'''🚀 <b>Only 2 featured slots left.</b>
 
 Early projects can push visibility with:
 • homepage placement
@@ -156,11 +181,20 @@ Claim. Build signal. Get seen.
 
 Powered by PrimePulseOps.com
 
-#Web3 #NewTokens #CryptoMarketing'''])
+#Web3 #NewTokens #CryptoMarketing''',
+'''🔥 <b>Top signal projects get seen first.</b>
+
+Cryptalysts turns early listings into discoverable visibility assets with public signal, claim tools and featured exposure.
+
+🔗 https://cryptalysts.com/feature-your-token/
+
+#CryptoGrowth #TokenVisibility #PrimePulseOps'''])
 
 def main():
     require_env(); sent=0
-    for item in wp_get_items():
+    items=wp_get_items()
+    if not items: print("No eligible public feed items after quality filter.")
+    for item in items:
         try:
             card=make_card(item); tg_send_photo(card,token_caption(item)); wp_mark(int(item["post_id"])); sent+=1
         except Exception as e: print("[TOKEN POST ERROR]",item.get("post_id"),repr(e))
