@@ -5,6 +5,7 @@ import requests
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError, UserPrivacyRestrictedError, ChatWriteForbiddenError
+from telethon.tl.types import Channel, Chat, User
 
 WP_BASE = os.getenv("WP_BASE", "https://cryptalysts.com").rstrip("/")
 WP_USERNAME = os.getenv("WP_USERNAME", "")
@@ -15,9 +16,9 @@ TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 TELEGRAM_SESSION = os.getenv("TELEGRAM_SESSION", "")
 
 MAX_SENDS = int(os.getenv("MAX_TELEGRAM_SENDS", "3"))
-PRIORITY = os.getenv("OUTREACH_PRIORITY", "HIGH")
+PRIORITY = os.getenv("OUTREACH_PRIORITY", "ALL")
 SLEEP_BETWEEN_SENDS = int(os.getenv("SLEEP_BETWEEN_SENDS", "35"))
-UA = "CryptalystsOutreachDispatcher/1.1"
+UA = "CryptalystsOutreachDispatcher/1.2"
 
 def wp_get_leads():
     url = f"{WP_BASE}/wp-json/cryptalysts/v1/outreach-leads"
@@ -28,7 +29,7 @@ def wp_get_leads():
         headers={"User-Agent": UA, "Accept": "application/json"},
         timeout=30,
     )
-    print("[WP GET]", r.status_code, r.text[:500])
+    print("[WP GET]", r.status_code, r.text[:800])
     r.raise_for_status()
     return r.json().get("items", [])
 
@@ -42,7 +43,7 @@ def wp_update(post_id, status, sent_to="", error=""):
         headers={"User-Agent": UA, "Accept": "application/json", "Content-Type": "application/json"},
         timeout=30,
     )
-    print("[WP UPDATE]", post_id, status, r.status_code, r.text[:300])
+    print("[WP UPDATE]", post_id, status, r.status_code, r.text[:500])
     return r.ok
 
 def validate_env():
@@ -78,6 +79,21 @@ Claim your listing for free here:
 {listing_url}?claim=1
 """
 
+def entity_kind(entity):
+    if isinstance(entity, User):
+        if getattr(entity, "bot", False):
+            return "bot"
+        return "user"
+    if isinstance(entity, Channel):
+        if getattr(entity, "broadcast", False):
+            return "channel"
+        if getattr(entity, "megagroup", False):
+            return "group"
+        return "channel_or_group"
+    if isinstance(entity, Chat):
+        return "group"
+    return type(entity).__name__
+
 async def main():
     validate_env()
     leads = wp_get_leads()
@@ -88,6 +104,8 @@ async def main():
 
     client = TelegramClient(StringSession(TELEGRAM_SESSION), TELEGRAM_API_ID, TELEGRAM_API_HASH)
     sent = 0
+    skipped = 0
+    failed = 0
 
     async with client:
         me = await client.get_me()
@@ -106,6 +124,16 @@ async def main():
 
             try:
                 entity = await client.get_entity(tg)
+                kind = entity_kind(entity)
+                print(f"[ENTITY] {tg} kind={kind}")
+
+                if kind in ("channel", "group", "channel_or_group"):
+                    reason = f"Telegram target is a {kind}, not a direct DM user. Skipped for manual/public contact."
+                    print("[SKIPPED]", reason)
+                    wp_update(post_id, "SKIPPED", sent_to=tg, error=reason)
+                    skipped += 1
+                    continue
+
                 await client.send_message(entity, message, link_preview=False)
 
                 wp_update(post_id, "CONTACTED", sent_to=tg)
@@ -120,16 +148,20 @@ async def main():
                 break
 
             except (UserPrivacyRestrictedError, ChatWriteForbiddenError) as e:
-                error = f"Cannot message this Telegram target: {type(e).__name__}"
-                print("[FORBIDDEN]", error)
-                wp_update(post_id, "FAILED", sent_to=tg, error=error)
+                error = f"{type(e).__name__}: target cannot be messaged directly. Skipped for manual/public contact."
+                print("[SKIPPED FORBIDDEN]", error)
+                wp_update(post_id, "SKIPPED", sent_to=tg, error=error)
+                skipped += 1
+                continue
 
             except Exception as e:
                 error = f"{type(e).__name__}: {str(e)}"
                 print("[ERROR]", error)
                 wp_update(post_id, "FAILED", sent_to=tg, error=error)
+                failed += 1
+                continue
 
-    print(f"Done. Sent {sent} Telegram messages.")
+    print(f"Done. Sent {sent} Telegram messages. Skipped {skipped}. Failed {failed}.")
 
 if __name__ == "__main__":
     asyncio.run(main())
