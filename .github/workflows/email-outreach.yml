@@ -3,7 +3,7 @@ name: Cryptalysts Email Outreach
 on:
   workflow_dispatch:
   schedule:
-    - cron: "31 */2 * * *"
+    - cron: "*/15 * * * *"
 
 jobs:
   email-outreach:
