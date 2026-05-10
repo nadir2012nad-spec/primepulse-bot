@@ -29,4 +29,4 @@ jobs:
           PUBLIC_CHANNEL_ID: ${{ secrets.PUBLIC_CHANNEL_ID }}
           MAX_PUBLIC_FEED_POSTS: 2
           PROMO_EVERY_RUN: true
-        run: python telegram_public_feed_v2.py
+        run: python telegram_public_feed.py
