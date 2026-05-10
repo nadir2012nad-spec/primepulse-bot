@@ -27,6 +27,6 @@ jobs:
           WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           PUBLIC_CHANNEL_ID: ${{ secrets.PUBLIC_CHANNEL_ID }}
-          MAX_PUBLIC_FEED_POSTS: 2
+          MAX_PUBLIC_FEED_POSTS: 4
           PROMO_EVERY_RUN: true
         run: python telegram_public_feed.py
