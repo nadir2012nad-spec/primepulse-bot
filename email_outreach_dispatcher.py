@@ -15,7 +15,7 @@ SMTP_FROM_EMAIL=os.getenv("SMTP_FROM_EMAIL",SMTP_USERNAME)
 SMTP_FROM_NAME=os.getenv("SMTP_FROM_NAME","Cryptalysts")
 SMTP_USE_TLS=os.getenv("SMTP_USE_TLS","true").lower() in ("1","true","yes","y")
 MAX_EMAIL_SENDS=int(os.getenv("MAX_EMAIL_SENDS","10"))
-UA="CryptalystsEmailOutreach/1.0"
+UA="Mozilla/5.0 CryptalystsEmailOutreach/1.1"
 
 def require_env():
     missing=[k for k,v in {
@@ -31,10 +31,10 @@ def require_env():
 
 def wp_get_leads():
     r=requests.get(
-        f"{WP_BASE}/wp-json/cryptalysts/v1/email-leads",
+        f"{WP_BASE}/wp-json/cryptalysts/v1/mail-queue",
         params={"limit":MAX_EMAIL_SENDS},
         auth=(WP_USERNAME,WP_APP_PASSWORD),
-        headers={"User-Agent":UA,"Accept":"application/json"},
+        headers={"User-Agent":UA,"Accept":"application/json","Cache-Control":"no-cache"},
         timeout=30
     )
     print("[WP GET]",r.status_code,r.text[:900])
@@ -43,10 +43,10 @@ def wp_get_leads():
 
 def wp_update(post_id,status,sent_to="",error=""):
     r=requests.post(
-        f"{WP_BASE}/wp-json/cryptalysts/v1/email-update",
+        f"{WP_BASE}/wp-json/cryptalysts/v1/mail-update",
         json={"post_id":post_id,"status":status,"sent_to":sent_to,"error":error[:900]},
         auth=(WP_USERNAME,WP_APP_PASSWORD),
-        headers={"User-Agent":UA,"Accept":"application/json","Content-Type":"application/json"},
+        headers={"User-Agent":UA,"Accept":"application/json","Content-Type":"application/json","Cache-Control":"no-cache"},
         timeout=30
     )
     print("[WP UPDATE]",post_id,status,r.status_code,r.text[:500])
@@ -70,10 +70,19 @@ def main():
     if not leads:
         print("No email leads to contact.")
         return
-    sent=0; failed=0
+
+    sent=0
+    failed=0
+
     for lead in leads:
-        post_id=lead["post_id"]; to_email=lead["email"]; subject=lead["subject"]; body=lead["body"]; title=lead.get("title","")
+        post_id=lead["post_id"]
+        to_email=lead["email"]
+        subject=lead["subject"]
+        body=lead["body"]
+        title=lead.get("title","")
+
         print(f"[EMAIL TRY] {title} -> {to_email}")
+
         try:
             send_email(to_email,subject,body)
             wp_update(post_id,"EMAIL_SENT",sent_to=to_email)
@@ -84,6 +93,7 @@ def main():
             print("[EMAIL ERROR]",err)
             wp_update(post_id,"EMAIL_FAILED",sent_to=to_email,error=err)
             failed+=1
+
     print(f"Done. Sent {sent}. Failed {failed}.")
 
 if __name__=="__main__":
