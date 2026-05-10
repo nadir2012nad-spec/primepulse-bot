@@ -25,5 +25,7 @@ jobs:
           WP_BASE: https://cryptalysts.com
           WP_USERNAME: ${{ secrets.WP_USERNAME }}
           WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
           MAX_FORM_DISCOVERY: 30
         run: python website_form_discovery.py
