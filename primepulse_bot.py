@@ -24,6 +24,9 @@ MIN_QUALITY_SCORE = int(os.getenv("MIN_QUALITY_SCORE", "35"))
 RUN_ONCE = os.getenv("RUN_ONCE", "true").lower() in ("1", "true", "yes", "y")
 CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "60"))
 REQUIRE_SOCIAL = os.getenv("REQUIRE_SOCIAL", "false").lower() in ("1", "true", "yes", "y")
+ENRICHMENT_MAX_PAGES = int(os.getenv("ENRICHMENT_MAX_PAGES", "6"))
+ENRICHMENT_TIMEOUT = int(os.getenv("ENRICHMENT_TIMEOUT", "12"))
+CONTACT_FORM_SCAN = os.getenv("CONTACT_FORM_SCAN", "true").lower() in ("1", "true", "yes", "y")
 
 DEX_CHAINS = ["solana", "ethereum", "base", "bsc", "polygon"]
 GECKO_NETWORKS = ["solana", "eth", "base", "bsc", "polygon_pos"]
@@ -31,7 +34,10 @@ seen_fingerprints = set()
 
 STABLE_OR_WRAPPED = ["usdt","tether","usdc","usd coin","dai","busd","fdusd","tusd","usde","stablecoin","wrapped","weth","wbtc","wsol","wmatic","binance-peg","bridged","wormhole","staked","restaked"]
 SPAM_TERMS = ["test token","testtoken","lp token","liquidity pool token","fake usdt","fake usdc","claim rewards","airdrop claim","visit to claim","reward token"]
-BAD_EMAIL_DOMAINS = {"example.com","domain.com","email.com","test.com","localhost.com"}
+BAD_EMAIL_DOMAINS = {"example.com","domain.com","email.com","test.com","localhost.com","sentry.io","schema.org"}
+EMAIL_PRIORITY_WORDS = ["founder", "team", "hello", "contact", "business", "partnership", "partner", "marketing", "support", "info", "press"]
+CONTACT_PATHS = ["/contact", "/contact-us", "/about", "/about-us", "/team", "/support", "/docs", "/links", "/community", "/partnerships"]
+FORM_PLATFORMS = ["typeform.com", "tally.so", "forms.gle", "docs.google.com/forms", "formspree.io", "hubspot", "airtable.com", "notion.site", "jotform.com"]
 
 @dataclass
 class TokenCandidate:
@@ -78,6 +84,14 @@ class TokenCandidate:
     auto_tags: str = ""
     project_category: str = "Unclassified"
     ai_visibility_score: int = 0
+    contact_form_url: str = ""
+    docs_url: str = ""
+    linktree_url: str = ""
+    medium_url: str = ""
+    reddit_url: str = ""
+    discovered_emails: str = ""
+    enrichment_pages_scanned: int = 0
+    enrichment_sources: str = ""
 
 def clean_text(v: Any) -> str: return "" if v is None else str(v).strip()
 def clean_float(v: Any) -> float:
@@ -108,7 +122,7 @@ def fingerprint(t: TokenCandidate) -> str:
 
 def http_get_json(url: str, headers=None, timeout=20):
     try:
-        r = requests.get(url, timeout=timeout, headers=headers or {"Accept":"application/json","User-Agent":"CryptalystsPrimePulse/7.0"})
+        r = requests.get(url, timeout=timeout, headers=headers or {"Accept":"application/json","User-Agent":"CryptalystsPrimePulse/8.0"})
         if not r.ok:
             print(f"[GET JSON ERROR] {r.status_code} {url} :: {r.text[:250]}")
             return None
@@ -120,7 +134,7 @@ def http_get_html(url: str, timeout=12):
     url = normalize_url(url)
     if not valid_url(url): return "", url
     try:
-        r = requests.get(url, timeout=timeout, allow_redirects=True, headers={"Accept":"text/html,application/xhtml+xml,*/*","User-Agent":"Mozilla/5.0 (compatible; CryptalystsBot/7.0; +https://cryptalysts.com)"})
+        r = requests.get(url, timeout=timeout, allow_redirects=True, headers={"Accept":"text/html,application/xhtml+xml,*/*","User-Agent":"Mozilla/5.0 (compatible; CryptalystsBot/8.0; +https://cryptalysts.com)"})
         ctype = r.headers.get("content-type","").lower()
         if not r.ok or ("text/html" not in ctype and "application/xhtml" not in ctype): return "", r.url
         return r.text[:650000], r.url
@@ -129,14 +143,19 @@ def http_get_html(url: str, timeout=12):
         return "", url
 def http_post_json(url: str, payload: Dict[str, Any], auth: Tuple[str,str]):
     try:
-        r = requests.post(url, json=payload, auth=auth, timeout=35, headers={"Accept":"application/json","Content-Type":"application/json","User-Agent":"CryptalystsPrimePulse/7.0"})
+        r = requests.post(url, json=payload, auth=auth, timeout=45, headers={"Accept":"application/json","Content-Type":"application/json","User-Agent":"CryptalystsPrimePulse/8.0"})
         if not r.ok:
-            print(f"[POST ERROR] {r.status_code} :: {r.text[:800]}")
-            return None
-        return r.json()
+            print(f"[POST ERROR] {r.status_code} :: {r.text[:1000]}")
+            return {"ok": False, "error": f"HTTP {r.status_code}", "body": r.text[:1000]}
+        try:
+            return r.json()
+        except Exception:
+            print(f"[POST INVALID JSON] {r.text[:1000]}")
+            return {"ok": False, "error": "Invalid JSON/empty WordPress response", "body": r.text[:1000]}
     except Exception as e:
         print(f"[POST EXCEPTION] {e}")
-        return None
+        return {"ok": False, "error": str(e), "body": ""}
+
 def send_telegram(message: str):
     if not BOT_TOKEN or not CHAT_ID:
         print("[TELEGRAM SKIPPED] Missing credentials")
@@ -166,46 +185,180 @@ def first_matching_link(links: List[str], needles: List[str]) -> str:
         low = u.lower()
         if any(n in low for n in needles): return u
     return ""
-def extract_email(html: str) -> str:
-    emails = re.findall(r"mailto:([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})", html, re.I)
-    emails += re.findall(r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b", html, re.I)
-    cleaned, seen = [], set()
+def clean_email_value(e: str) -> str:
+    e = unescape(e or "").lower().strip().strip(".,;:()[]{}<>\"'")
+    e = re.sub(r"\s+", "", e)
+    # handle common obfuscations lightly
+    e = e.replace("[at]", "@").replace("(at)", "@").replace(" at ", "@")
+    e = e.replace("[dot]", ".").replace("(dot)", ".").replace(" dot ", ".")
+    return e
+
+def valid_email(e: str) -> bool:
+    if not re.match(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$", e or ""):
+        return False
+    domain = e.split("@")[-1]
+    if domain in BAD_EMAIL_DOMAINS: return False
+    if any(e.endswith(x) for x in [".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".css", ".js"]): return False
+    if any(x in e for x in ["sentry", "wixpress", "wordpress", "schema.org", "cloudflare", "example"]): return False
+    return True
+
+def extract_emails(html: str) -> List[str]:
+    raw = []
+    raw += re.findall(r"mailto:([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})", html, re.I)
+    raw += re.findall(r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b", html, re.I)
+    # light obfuscated email patterns: hello [at] domain [dot] com
+    raw += re.findall(r"\b[a-zA-Z0-9._%+\-]+\s*(?:\[at\]|\(at\)| at )\s*[a-zA-Z0-9.\-]+\s*(?:\[dot\]|\(dot\)| dot )\s*[a-zA-Z]{2,}\b", html, re.I)
+    out, seen = [], set()
+    for e in raw:
+        ce = clean_email_value(e)
+        if ce in seen or not valid_email(ce):
+            continue
+        seen.add(ce)
+        out.append(ce)
+    return out
+
+def pick_best_email(emails: List[str]) -> str:
+    if not emails: return ""
+    scored = []
     for e in emails:
-        e = e.lower().strip().strip(".,;:()[]{}<>\"'")
-        if e in seen: continue
-        seen.add(e)
-        domain = e.split("@")[-1]
-        if domain in BAD_EMAIL_DOMAINS: continue
-        if any(e.endswith(x) for x in [".png",".jpg",".jpeg",".webp",".gif",".svg",".css",".js"]): continue
-        if any(x in e for x in ["sentry","wixpress","wordpress","schema.org","cloudflare"]): continue
-        cleaned.append(e)
-    preferred = [e for e in cleaned if any(x in e for x in ["contact","team","hello","info","support","business","partner","marketing"])]
-    return (preferred or cleaned or [""])[0]
+        local = e.split("@")[0]
+        score = 0
+        for i, w in enumerate(EMAIL_PRIORITY_WORDS):
+            if w in local:
+                score += 100 - i
+        if any(x in local for x in ["noreply", "no-reply", "donotreply"]):
+            score -= 200
+        scored.append((score, e))
+    scored.sort(reverse=True)
+    return scored[0][1]
+
+def extract_email(html: str) -> str:
+    return pick_best_email(extract_emails(html))
+
+def detect_contact_form(html: str, page_url: str, links: List[str]) -> Tuple[str, str]:
+    if not CONTACT_FORM_SCAN:
+        return "", ""
+    low = html.lower()
+    if "<form" in low and any(k in low for k in ["contact", "message", "email", "name", "submit", "inquiry", "partnership"]):
+        m = re.search(r"<form[^>]+action=[\"']([^\"']+)[\"']", html, re.I)
+        action = normalize_url(urljoin(page_url, unescape(m.group(1).strip()))) if m else page_url
+        return action, "html_form"
+    for u in links:
+        lu = u.lower()
+        for platform in FORM_PLATFORMS:
+            if platform in lu:
+                return u, platform
+    return "", ""
+
+def unique_keep_order(items: List[str]) -> List[str]:
+    out, seen = [], set()
+    for x in items:
+        x = clean_text(x)
+        if x and x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+def candidate_enrichment_urls(home_url: str, homepage_html: str, homepage_links: List[str]) -> List[str]:
+    base = normalize_url(home_url)
+    parsed = urlparse(base)
+    root = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else base
+    urls = [base]
+    urls += [normalize_url(urljoin(root, p)) for p in CONTACT_PATHS]
+    important_needles = ["contact", "about", "team", "support", "docs", "whitepaper", "links", "linktree", "discord", "community", "partnership"]
+    for u in homepage_links:
+        lu = u.lower()
+        if any(n in lu for n in important_needles):
+            # stay lightweight: prioritize same-domain + known profile hubs
+            if urlparse(u).netloc == parsed.netloc or any(h in lu for h in ["linktr.ee", "linktree", "bio.link", "beacons.ai", "carrd.co"]):
+                urls.append(u)
+    return unique_keep_order(urls)[:max(1, ENRICHMENT_MAX_PAGES)]
+
 def extract_favicon(html: str, base_url: str) -> str:
     m = re.search(r'<link[^>]+rel=["\'][^"\']*(?:icon|shortcut icon|apple-touch-icon)[^"\']*["\'][^>]+href=["\']([^"\']+)["\']', html, re.I)
     if m: return normalize_url(urljoin(base_url, unescape(m.group(1).strip())))
     p = urlparse(base_url)
     return f"{p.scheme}://{p.netloc}/favicon.ico" if p.scheme and p.netloc else ""
 def enrich_from_website(t: TokenCandidate) -> TokenCandidate:
-    if not t.website or not valid_url(normalize_url(t.website)): return t
-    html, final_url = http_get_html(t.website)
-    if not html: return t
+    if not t.website or not valid_url(normalize_url(t.website)):
+        return t
+
+    home_html, final_url = http_get_html(t.website, timeout=ENRICHMENT_TIMEOUT)
+    if not home_html:
+        return t
+
     t.website = final_url or t.website
-    links = extract_links(html, t.website)
-    if not t.twitter: t.twitter = first_matching_link(links, ["twitter.com/","x.com/"])
-    if not t.telegram: t.telegram = first_matching_link(links, ["t.me/","telegram.me/"])
-    if not t.discord: t.discord = first_matching_link(links, ["discord.gg/","discord.com/invite"])
+    home_links = extract_links(home_html, t.website)
+    urls = candidate_enrichment_urls(t.website, home_html, home_links)
+
+    all_links: List[str] = []
+    all_emails: List[str] = []
+    pages_scanned = 0
+    sources = []
+
+    for page_url in urls:
+        html, final = http_get_html(page_url, timeout=ENRICHMENT_TIMEOUT)
+        if not html:
+            continue
+        pages_scanned += 1
+        sources.append(final or page_url)
+        links = extract_links(html, final or page_url)
+        all_links.extend(links)
+        all_emails.extend(extract_emails(html))
+
+        if not t.contact_form_url:
+            form_url, form_platform = detect_contact_form(html, final or page_url, links)
+            if form_url:
+                t.contact_form_url = form_url
+                if form_platform:
+                    t.enrichment_sources += f" form:{form_platform}"
+
+        og_img = meta_content(html, ["og:image", "twitter:image", "twitter:image:src"])
+        if og_img:
+            og_img = normalize_url(urljoin(final or page_url, og_img))
+            if og_img and not t.banner_url: t.banner_url = og_img
+            if og_img and not t.logo_url: t.logo_url = og_img
+
+        desc = meta_content(html, ["description", "og:description", "twitter:description"])
+        title = page_title(html)
+        if desc and "Website metadata:" not in t.analysis_notes:
+            t.analysis_notes += f" Website metadata: {desc[:220]}"
+        elif title and "Website title detected:" not in t.analysis_notes:
+            t.analysis_notes += f" Website title detected: {title[:160]}"
+
+        time.sleep(0.15)
+
+    links = unique_keep_order(home_links + all_links)
+    all_emails = unique_keep_order(all_emails)
+
+    if not t.twitter: t.twitter = first_matching_link(links, ["twitter.com/", "x.com/"])
+    if not t.telegram: t.telegram = first_matching_link(links, ["t.me/", "telegram.me/"])
+    if not t.discord: t.discord = first_matching_link(links, ["discord.gg/", "discord.com/invite"])
     if not t.github: t.github = first_matching_link(links, ["github.com/"])
-    if not t.email: t.email = extract_email(html)
-    og_img = meta_content(html, ["og:image","twitter:image","twitter:image:src"])
-    if og_img: og_img = normalize_url(urljoin(t.website, og_img))
-    if og_img and not t.banner_url: t.banner_url = og_img
-    if og_img and not t.logo_url: t.logo_url = og_img
-    if not t.logo_url: t.logo_url = extract_favicon(html, t.website)
-    desc = meta_content(html, ["description","og:description","twitter:description"])
-    title = page_title(html)
-    if desc: t.analysis_notes += f" Website metadata: {desc[:220]}"
-    elif title: t.analysis_notes += f" Website title detected: {title[:160]}"
+    if not t.docs_url: t.docs_url = first_matching_link(links, ["docs.", "/docs", "whitepaper", "gitbook", "mirror.xyz"])
+    if not t.linktree_url: t.linktree_url = first_matching_link(links, ["linktr.ee/", "linktree", "bio.link/", "beacons.ai/"])
+    if not t.medium_url: t.medium_url = first_matching_link(links, ["medium.com/", "mirror.xyz/"])
+    if not t.reddit_url: t.reddit_url = first_matching_link(links, ["reddit.com/r/"])
+
+    if not t.email:
+        t.email = pick_best_email(all_emails)
+    if all_emails:
+        t.discovered_emails = ", ".join(all_emails[:8])
+
+    if not t.logo_url:
+        t.logo_url = extract_favicon(home_html, t.website)
+
+    t.enrichment_pages_scanned = pages_scanned
+    t.enrichment_sources = ", ".join(sources[:8])
+    if pages_scanned:
+        t.analysis_notes += f" Enrichment scanned {pages_scanned} website page(s)."
+    if t.contact_form_url:
+        t.analysis_notes += " Contact form detected."
+    if t.email:
+        t.analysis_notes += " Outreach email detected."
+    if t.discord:
+        t.analysis_notes += " Discord route detected."
+
     return t
 
 def dex_profile_links(profile: Dict[str, Any]) -> Dict[str,str]:
@@ -318,7 +471,7 @@ def gecko_candidate(pool: Dict[str,Any], inc: Dict[str,Dict[str,Any]], network: 
     )
 def source_gecko_new_pools() -> List[TokenCandidate]:
     out = []
-    headers = {"Accept":"application/json;version=20230302","User-Agent":"CryptalystsPrimePulse/7.0"}
+    headers = {"Accept":"application/json;version=20230302","User-Agent":"CryptalystsPrimePulse/8.0"}
     for network in GECKO_NETWORKS:
         data = http_get_json(f"https://api.geckoterminal.com/api/v2/networks/{network}/new_pools?include=base_token,quote_token", headers=headers)
         if isinstance(data, dict):
@@ -337,14 +490,30 @@ def stable_or_wrapped(name: str, symbol: str) -> bool:
 def spam_name(name: str, symbol: str) -> bool:
     return any(k in f"{name} {symbol}".lower() for k in SPAM_TERMS)
 def contact_priority(t: TokenCandidate) -> TokenCandidate:
-    if t.email and (t.twitter or t.telegram): t.contact_priority, t.outreach_route, t.contact_reason = "HIGH","EMAIL_PLUS_SOCIAL","Email plus at least one public social/community channel found."
-    elif t.email: t.contact_priority, t.outreach_route, t.contact_reason = "HIGH","EMAIL","Public email found."
-    elif t.telegram and t.twitter: t.contact_priority, t.outreach_route, t.contact_reason = "HIGH","TELEGRAM_PLUS_X","Telegram and X/Twitter found."
-    elif t.telegram: t.contact_priority, t.outreach_route, t.contact_reason = "MEDIUM","TELEGRAM","Telegram community/contact found."
-    elif t.twitter: t.contact_priority, t.outreach_route, t.contact_reason = "MEDIUM","X_PUBLIC","X/Twitter profile found."
-    elif t.website: t.contact_priority, t.outreach_route, t.contact_reason = "LOW","WEBSITE_CONTACT_CHECK","Website found but no direct email/social contact detected."
-    else: t.contact_priority, t.outreach_route, t.contact_reason = "NONE","CLAIM_ONLY","No direct public contact found during first enrichment."
+    if t.email and (t.twitter or t.telegram or t.discord):
+        t.contact_priority, t.outreach_route, t.contact_reason = "HIGH", "EMAIL_PLUS_SOCIAL", "Email plus at least one public social/community channel found."
+    elif t.email:
+        t.contact_priority, t.outreach_route, t.contact_reason = "HIGH", "EMAIL", "Public outreach email found."
+    elif t.contact_form_url and (t.twitter or t.telegram or t.discord):
+        t.contact_priority, t.outreach_route, t.contact_reason = "HIGH", "FORM_PLUS_SOCIAL", "Contact form plus public social/community route found."
+    elif t.contact_form_url:
+        t.contact_priority, t.outreach_route, t.contact_reason = "MEDIUM", "WEBSITE_FORM", "Website contact form found."
+    elif t.discord and (t.twitter or t.telegram):
+        t.contact_priority, t.outreach_route, t.contact_reason = "MEDIUM", "DISCORD_PLUS_SOCIAL", "Discord plus another community route found."
+    elif t.telegram and t.twitter:
+        t.contact_priority, t.outreach_route, t.contact_reason = "HIGH", "TELEGRAM_PLUS_X", "Telegram and X/Twitter found."
+    elif t.telegram:
+        t.contact_priority, t.outreach_route, t.contact_reason = "MEDIUM", "TELEGRAM", "Telegram community/contact found."
+    elif t.discord:
+        t.contact_priority, t.outreach_route, t.contact_reason = "MEDIUM", "DISCORD", "Discord community route found."
+    elif t.twitter:
+        t.contact_priority, t.outreach_route, t.contact_reason = "MEDIUM", "X_PUBLIC", "X/Twitter profile found."
+    elif t.website:
+        t.contact_priority, t.outreach_route, t.contact_reason = "LOW", "WEBSITE_CONTACT_CHECK", "Website found but no direct email/social contact detected."
+    else:
+        t.contact_priority, t.outreach_route, t.contact_reason = "NONE", "CLAIM_ONLY", "No direct public contact found during enrichment."
     return t
+
 def score(t: TokenCandidate) -> TokenCandidate:
     q, r, notes = 0, 0, []
     if t.age_minutes is None: r += 8; notes.append("Pair age unavailable.")
@@ -364,14 +533,17 @@ def score(t: TokenCandidate) -> TokenCandidate:
     if t.twitter: q += 12
     else: r += 5
     if t.telegram: q += 8
-    if t.email: q += 7; notes.append("Public email found.")
-    if t.discord: q += 4
+    if t.email: q += 12; notes.append("Public email found.")
+    if t.contact_form_url: q += 8; notes.append("Contact form found.")
+    if t.discord: q += 6
     if t.github: q += 3
+    if t.docs_url: q += 4
+    if t.linktree_url: q += 3
     if t.logo_url: q += 7
     if t.banner_url: q += 5
     if stable_or_wrapped(t.name, t.symbol): q -= 30; r += 80; notes.append("Stablecoin/wrapped/official asset pattern.")
     if spam_name(t.name, t.symbol): q -= 15; r += 40; notes.append("Spam-like naming pattern.")
-    if not (t.website or t.twitter or t.telegram or t.email): r += 15; notes.append("No public contact channel found.")
+    if not (t.website or t.twitter or t.telegram or t.email or t.discord or t.contact_form_url): r += 15; notes.append("No public contact channel found.")
     t.quality_score, t.risk_score = max(0,min(100,q)), max(0,min(100,r))
     t.analysis_notes = " ".join(notes + ([t.analysis_notes.strip()] if t.analysis_notes.strip() else []))
     return contact_priority(t)
@@ -434,6 +606,12 @@ def build_auto_tags(t: TokenCandidate) -> str:
         tags.append("telegram-found")
     if t.email:
         tags.append("email-found")
+    if t.contact_form_url:
+        tags.append("contact-form-found")
+    if t.discord:
+        tags.append("discord-found")
+    if t.docs_url:
+        tags.append("docs-found")
     return ", ".join([x for x in tags if x])
 
 
@@ -464,6 +642,10 @@ def compute_ai_visibility_score(t: TokenCandidate) -> int:
         base += 4
     if t.logo_url and t.banner_url:
         base += 4
+    if t.email:
+        base += 5
+    if t.contact_form_url:
+        base += 3
     return max(0, min(100, base))
 
 def compute_business_scores(t: TokenCandidate) -> TokenCandidate:
@@ -478,6 +660,9 @@ def compute_business_scores(t: TokenCandidate) -> TokenCandidate:
     if t.volume_h1 >= 25000: lead += 10
     elif t.volume_h1 >= 5000: lead += 6
     if t.website: lead += 4
+    if t.email: lead += 12
+    if t.contact_form_url: lead += 8
+    if t.discord: lead += 5
     if t.logo_url or t.banner_url: lead += 4
     t.lead_score = max(0, min(100, lead))
 
@@ -500,8 +685,9 @@ def compute_business_scores(t: TokenCandidate) -> TokenCandidate:
     if t.website: visibility += 20
     if t.twitter: visibility += 20
     if t.telegram: visibility += 15
-    if t.email: visibility += 10
-    if t.discord: visibility += 5
+    if t.email: visibility += 15
+    if t.contact_form_url: visibility += 10
+    if t.discord: visibility += 7
     if t.logo_url: visibility += 10
     if t.banner_url: visibility += 10
     if t.quality_score >= 60: visibility += 10
@@ -524,31 +710,31 @@ def build_outreach_templates(t: TokenCandidate) -> TokenCandidate:
     t.outreach_subject = f"{t.name} is already indexed on Cryptalysts"
 
     t.outreach_email = (
-        f"Hi {t.name} team,\\n\\n"
-        f"Your token {title} was detected and indexed on Cryptalysts as an early-stage listing.\\n\\n"
-        f"You can claim/update the listing here: {claim_url}\\n"
-        f"If you want stronger visibility, featured placement is available here: {feature_url}\\n\\n"
-        f"Cryptalysts tracks early token visibility and public discovery.\\n"
+        f"Hi {t.name} team,\n\n"
+        f"Your token {title} was detected and indexed on Cryptalysts as an early-stage token listing.\n\n"
+        f"You can claim your listing for free and unlock visibility tools here:\n{claim_url}\n\n"
+        f"If you want stronger exposure, featured placement and PrimePulseOps visibility campaigns are available here:\n{feature_url}\n\n"
+        f"Cryptalysts tracks early token visibility, ranking signals and public discovery for new crypto projects.\n"
     )
 
     t.outreach_x = (
         f"{t.name} was detected early and indexed on Cryptalysts. "
-        f"Project team can claim/update the listing here: {claim_url}"
+        f"Project team can claim the listing for free and unlock visibility tools: {claim_url}"
     )
 
     t.outreach_telegram = (
         f"Hi team — {t.name} was detected by Cryptalysts and indexed as an early token listing. "
-        f"You can claim/update it here: {claim_url}. Featured visibility is available via {feature_url}."
+        f"You can claim your listing for free here: {claim_url}. Featured visibility is available via {feature_url}."
     )
 
     if t.contact_priority == "HIGH":
-        t.outreach_next_action = "Contact now using the highest confidence route shown in Telegram."
+        t.outreach_next_action = "Contact now using email/contact form plus the strongest public social route."
     elif t.contact_priority == "MEDIUM":
-        t.outreach_next_action = "Use public social/community contact carefully; avoid spam or mass DM."
+        t.outreach_next_action = "Use Telegram/Discord/X or website form carefully; avoid spam or mass DM."
     elif t.contact_priority == "LOW":
-        t.outreach_next_action = "Review website manually or leave as claim/SEO listing."
+        t.outreach_next_action = "Review website manually and search for contact page/form before outreach."
     else:
-        t.outreach_next_action = "No direct outreach. Let SEO + claim CTA work."
+        t.outreach_next_action = "No direct outreach. Let SEO + claim CTA + public feed work."
 
     return t
 
@@ -580,6 +766,14 @@ def publish(t: TokenCandidate) -> Tuple[bool,str]:
         "auto_tags":t.auto_tags,
         "project_category":t.project_category,
         "ai_visibility_score":t.ai_visibility_score,
+        "contact_form_url":t.contact_form_url,
+        "docs_url":t.docs_url,
+        "linktree_url":t.linktree_url,
+        "medium_url":t.medium_url,
+        "reddit_url":t.reddit_url,
+        "discovered_emails":t.discovered_emails,
+        "enrichment_pages_scanned":t.enrichment_pages_scanned,
+        "enrichment_sources":t.enrichment_sources,
     }
     res = http_post_json(WP_API_URL, payload, auth=(WP_USERNAME, WP_APP_PASSWORD))
     if not res:
@@ -598,6 +792,9 @@ def telegram_message(t: TokenCandidate, wp_status: str) -> str:
     if t.telegram: contacts.append(f"💬 <b>Telegram:</b> {t.telegram}")
     if t.email: contacts.append(f"✉️ <b>Email:</b> {t.email}")
     if t.discord: contacts.append(f"🟣 <b>Discord:</b> {t.discord}")
+    if t.contact_form_url: contacts.append(f"📝 <b>Contact Form:</b> {t.contact_form_url}")
+    if t.docs_url: contacts.append(f"📚 <b>Docs:</b> {t.docs_url}")
+    if t.linktree_url: contacts.append(f"🔗 <b>Link Hub:</b> {t.linktree_url}")
     if t.github: contacts.append(f"🐙 <b>GitHub:</b> {t.github}")
     contact_text = "\\n".join(contacts) if contacts else "No public contact channel found yet"
     return (f"🚨 <b>QUALIFIED TOKEN DETECTED</b>\\n━━━━━━━━━━━━━━━━━━\\n🪙 <b>Token:</b> {t.name} ({t.symbol})\\n⛓ <b>Chain:</b> {t.chain}\\n🏦 <b>DEX:</b> {t.dex or 'N/A'}\\n⏱ <b>Age:</b> {age}\\n💧 <b>Liquidity:</b> {fmt_money(t.liquidity_usd)}\\n📊 <b>Volume 1h:</b> {fmt_money(t.volume_h1)}\\n🧠 <b>Quality:</b> {t.quality_score}/100\\n⚠️ <b>Risk:</b> {t.risk_score}/100\\n📬 <b>Contact Priority:</b> {t.contact_priority}\\n🎯 <b>Outreach Route:</b> {t.outreach_route}\\n📌 <b>Reason:</b> {t.contact_reason}\\n📄 <b>Contract:</b> <code>{t.contract_address}</code>\\n🔎 <b>Source:</b> {t.source}\\n{contact_text}\\n🔗 <b>Market:</b> {t.dexscreener_url or t.source_url or 'N/A'}\\n🧩 <b>Cryptalysts:</b> {wp_status}")
@@ -643,17 +840,17 @@ def process(candidates):
     print(f"[SUMMARY] published={published} skipped={skipped}")
 def run_once():
     print("============================================================")
-    print("PrimePulse / Cryptalysts Discovery Engine v0.7")
+    print("PrimePulse / Cryptalysts Discovery Engine v0.8")
     print(f"UTC: {datetime.now(timezone.utc).isoformat()}")
     print(f"Min liquidity: ${MIN_LIQUIDITY_USD:,.0f}")
     print(f"Max age: {MAX_AGE_MINUTES} minutes")
     print(f"Min quality: {MIN_QUALITY_SCORE}/100")
-    print("Sources: DexScreener + GeckoTerminal + Website enrichment + CRM scoring")
+    print("Sources: DexScreener + GeckoTerminal + Deep website/contact enrichment + CRM scoring")
     print("============================================================")
     process(collect())
 def main():
     if RUN_ONCE: run_once(); return
-    send_telegram("✅ <b>PrimePulse Discovery Engine v0.3 ACTIVE</b>")
+    send_telegram("✅ <b>PrimePulse Discovery Engine v0.8 ACTIVE</b>")
     while True:
         try: run_once()
         except Exception as e: print(f"[LOOP ERROR] {e}")
