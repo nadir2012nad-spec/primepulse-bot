@@ -34,10 +34,27 @@ seen_fingerprints = set()
 
 STABLE_OR_WRAPPED = ["usdt","tether","usdc","usd coin","dai","busd","fdusd","tusd","usde","stablecoin","wrapped","weth","wbtc","wsol","wmatic","binance-peg","bridged","wormhole","staked","restaked"]
 SPAM_TERMS = ["test token","testtoken","lp token","liquidity pool token","fake usdt","fake usdc","claim rewards","airdrop claim","visit to claim","reward token"]
-BAD_EMAIL_DOMAINS = {"example.com","domain.com","email.com","test.com","localhost.com","sentry.io","schema.org"}
-EMAIL_PRIORITY_WORDS = ["founder", "team", "hello", "contact", "business", "partnership", "partner", "marketing", "support", "info", "press"]
-CONTACT_PATHS = ["/contact", "/contact-us", "/about", "/about-us", "/team", "/support", "/docs", "/links", "/community", "/partnerships"]
-FORM_PLATFORMS = ["typeform.com", "tally.so", "forms.gle", "docs.google.com/forms", "formspree.io", "hubspot", "airtable.com", "notion.site", "jotform.com"]
+BAD_EMAIL_DOMAINS = {"example.com","domain.com","email.com","test.com","localhost.com","sentry.io","schema.org","wixpress.com"}
+BAD_EMAIL_LOCALS = {"noreply","no-reply","donotreply","do-not-reply","privacy","legal","abuse","security","admin","webmaster"}
+EMAIL_PRIORITY_WORDS = [
+    "partnership", "partnerships", "business", "bizdev", "marketing", "growth", "founder", "ceo",
+    "team", "hello", "contact", "support", "listing", "press", "media", "info"
+]
+CONTACT_PATHS = [
+    "/contact", "/contact-us", "/contacts", "/support", "/help", "/about", "/about-us", "/team",
+    "/community", "/partnership", "/partnerships", "/partners", "/business", "/press", "/media",
+    "/docs", "/documentation", "/developers", "/dev", "/whitepaper", "/litepaper", "/links"
+]
+CONTACT_HINTS = ["contact", "support", "help", "team", "about", "business", "partnership", "partner", "press", "media", "docs", "whitepaper", "litepaper", "community"]
+FORM_PLATFORMS = ["typeform.com", "tally.so", "forms.gle", "docs.google.com/forms", "formspree.io", "hubspot", "hsforms", "airtable.com", "notion.site", "jotform.com", "paperform.co"]
+PROFILE_HUBS = ["linktr.ee", "linktree", "beacons.ai", "bio.link", "carrd.co", "taplink.cc", "solo.to"]
+BLOCKED_WEBSITE_DOMAINS = {
+    "x.com","twitter.com","t.me","telegram.me","discord.gg","discord.com","discordapp.com",
+    "dexscreener.com","dextools.io","pump.fun","birdeye.so","geckoterminal.com",
+    "solscan.io","etherscan.io","bscscan.com","basescan.org","polygonscan.com",
+    "coingecko.com","coinmarketcap.com","youtube.com","youtu.be","instagram.com","facebook.com",
+    "reddit.com","medium.com"
+}
 
 @dataclass
 class TokenCandidate:
@@ -92,6 +109,8 @@ class TokenCandidate:
     discovered_emails: str = ""
     enrichment_pages_scanned: int = 0
     enrichment_sources: str = ""
+    contact_reachability_score: int = 0
+    best_contact_route: str = ""
 
 def clean_text(v: Any) -> str: return "" if v is None else str(v).strip()
 def clean_float(v: Any) -> float:
@@ -109,6 +128,30 @@ def valid_url(url: str) -> bool:
         p = urlparse(url)
         return p.scheme in ("http","https") and bool(p.netloc) and "." in p.netloc
     except Exception: return False
+
+def domain_of(url: str) -> str:
+    try:
+        return urlparse(normalize_url(url)).netloc.lower().replace("www.", "")
+    except Exception:
+        return ""
+
+def is_blocked_website(url: str) -> bool:
+    d = domain_of(url)
+    if not d:
+        return True
+    return any(d == b or d.endswith("." + b) for b in BLOCKED_WEBSITE_DOMAINS)
+
+def valid_project_website(url: str) -> bool:
+    url = normalize_url(url)
+    return valid_url(url) and not is_blocked_website(url)
+
+def same_domain_or_hub(url: str, root_domain: str) -> bool:
+    d = domain_of(url)
+    if not d:
+        return False
+    if d == root_domain or d.endswith("." + root_domain):
+        return True
+    return any(h in d for h in PROFILE_HUBS) or d in {"github.com"}
 def now_ms() -> int: return int(datetime.now(timezone.utc).timestamp() * 1000)
 def age_minutes_from_ms(created_ms: Any) -> Optional[float]:
     try:
@@ -122,7 +165,7 @@ def fingerprint(t: TokenCandidate) -> str:
 
 def http_get_json(url: str, headers=None, timeout=20):
     try:
-        r = requests.get(url, timeout=timeout, headers=headers or {"Accept":"application/json","User-Agent":"CryptalystsPrimePulse/8.0"})
+        r = requests.get(url, timeout=timeout, headers=headers or {"Accept":"application/json","User-Agent":"CryptalystsPrimePulse/9.0"})
         if not r.ok:
             print(f"[GET JSON ERROR] {r.status_code} {url} :: {r.text[:250]}")
             return None
@@ -134,7 +177,7 @@ def http_get_html(url: str, timeout=12):
     url = normalize_url(url)
     if not valid_url(url): return "", url
     try:
-        r = requests.get(url, timeout=timeout, allow_redirects=True, headers={"Accept":"text/html,application/xhtml+xml,*/*","User-Agent":"Mozilla/5.0 (compatible; CryptalystsBot/8.0; +https://cryptalysts.com)"})
+        r = requests.get(url, timeout=timeout, allow_redirects=True, headers={"Accept":"text/html,application/xhtml+xml,*/*","User-Agent":"Mozilla/5.0 (compatible; CryptalystsBot/9.0; +https://cryptalysts.com)"})
         ctype = r.headers.get("content-type","").lower()
         if not r.ok or ("text/html" not in ctype and "application/xhtml" not in ctype): return "", r.url
         return r.text[:650000], r.url
@@ -143,7 +186,7 @@ def http_get_html(url: str, timeout=12):
         return "", url
 def http_post_json(url: str, payload: Dict[str, Any], auth: Tuple[str,str]):
     try:
-        r = requests.post(url, json=payload, auth=auth, timeout=45, headers={"Accept":"application/json","Content-Type":"application/json","User-Agent":"CryptalystsPrimePulse/8.0"})
+        r = requests.post(url, json=payload, auth=auth, timeout=45, headers={"Accept":"application/json","Content-Type":"application/json","User-Agent":"CryptalystsPrimePulse/9.0"})
         if not r.ok:
             print(f"[POST ERROR] {r.status_code} :: {r.text[:1000]}")
             return {"ok": False, "error": f"HTTP {r.status_code}", "body": r.text[:1000]}
@@ -176,10 +219,15 @@ def page_title(html: str) -> str:
     return unescape(re.sub(r"\s+", " ", m.group(1)).strip()) if m else ""
 def extract_links(html: str, base_url: str) -> List[str]:
     out = []
-    for raw in re.findall(r'(?:href|src)=["\']([^"\']+)["\']', html, re.I):
-        u = unescape(raw.strip())
-        if u and not u.startswith(("javascript:","#")): out.append(normalize_url(urljoin(base_url, u)))
-    return out
+    for pattern in [r'href="([^"]+)"', r"href='([^']+)'", r'src="([^"]+)"', r"src='([^']+)'"]:
+        for raw in re.findall(pattern, html, re.I):
+            u = unescape(raw.strip())
+            if not u or u.startswith(("javascript:", "#", "mailto:", "tel:")):
+                continue
+            full = normalize_url(urljoin(base_url, u))
+            if valid_url(full):
+                out.append(full)
+    return unique_keep_order(out)
 def first_matching_link(links: List[str], needles: List[str]) -> str:
     for u in links:
         low = u.lower()
@@ -188,29 +236,35 @@ def first_matching_link(links: List[str], needles: List[str]) -> str:
 def clean_email_value(e: str) -> str:
     e = unescape(e or "").lower().strip().strip(".,;:()[]{}<>\"'")
     e = re.sub(r"\s+", "", e)
-    # handle common obfuscations lightly
-    e = e.replace("[at]", "@").replace("(at)", "@").replace(" at ", "@")
-    e = e.replace("[dot]", ".").replace("(dot)", ".").replace(" dot ", ".")
+    e = e.replace("[at]", "@").replace("(at)", "@").replace("{at}", "@").replace(" at ", "@")
+    e = e.replace("[dot]", ".").replace("(dot)", ".").replace("{dot}", ".").replace(" dot ", ".")
+    e = e.replace("&#64;", "@").replace("%40", "@")
     return e
 
 def valid_email(e: str) -> bool:
     if not re.match(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$", e or ""):
         return False
-    domain = e.split("@")[-1]
-    if domain in BAD_EMAIL_DOMAINS: return False
-    if any(e.endswith(x) for x in [".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".css", ".js"]): return False
-    if any(x in e for x in ["sentry", "wixpress", "wordpress", "schema.org", "cloudflare", "example"]): return False
+    local, domain = e.split("@", 1)
+    if domain in BAD_EMAIL_DOMAINS:
+        return False
+    if local in BAD_EMAIL_LOCALS:
+        return False
+    if any(e.endswith(x) for x in [".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".css", ".js"]):
+        return False
+    if any(x in e for x in ["sentry", "wixpress", "wordpress", "schema.org", "cloudflare", "example", "email@"]):
+        return False
     return True
 
 def extract_emails(html: str) -> List[str]:
     raw = []
     raw += re.findall(r"mailto:([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})", html, re.I)
     raw += re.findall(r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b", html, re.I)
-    # light obfuscated email patterns: hello [at] domain [dot] com
-    raw += re.findall(r"\b[a-zA-Z0-9._%+\-]+\s*(?:\[at\]|\(at\)| at )\s*[a-zA-Z0-9.\-]+\s*(?:\[dot\]|\(dot\)| dot )\s*[a-zA-Z]{2,}\b", html, re.I)
+    raw += re.findall(r"\b[a-zA-Z0-9._%+\-]+\s*(?:\[at\]|\(at\)|\{at\}| at )\s*[a-zA-Z0-9.\-]+\s*(?:\[dot\]|\(dot\)|\{dot\}| dot )\s*[a-zA-Z]{2,}\b", html, re.I)
+    raw += re.findall(r"[a-zA-Z0-9._%+\-]+\s*\\u0040\s*[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", html, re.I)
+
     out, seen = [], set()
     for e in raw:
-        ce = clean_email_value(e)
+        ce = clean_email_value(e.replace("\\u0040", "@"))
         if ce in seen or not valid_email(ce):
             continue
         seen.add(ce)
@@ -218,16 +272,21 @@ def extract_emails(html: str) -> List[str]:
     return out
 
 def pick_best_email(emails: List[str]) -> str:
-    if not emails: return ""
+    if not emails:
+        return ""
     scored = []
     for e in emails:
         local = e.split("@")[0]
         score = 0
         for i, w in enumerate(EMAIL_PRIORITY_WORDS):
             if w in local:
-                score += 100 - i
-        if any(x in local for x in ["noreply", "no-reply", "donotreply"]):
-            score -= 200
+                score += 300 - (i * 8)
+        if any(x in local for x in ["partnership", "business", "marketing", "growth", "founder", "bizdev"]):
+            score += 120
+        if any(x in local for x in ["support", "hello", "contact", "team"]):
+            score += 60
+        if any(x in local for x in ["noreply", "no-reply", "privacy", "legal", "abuse"]):
+            score -= 500
         scored.append((score, e))
     scored.sort(reverse=True)
     return scored[0][1]
@@ -235,9 +294,31 @@ def pick_best_email(emails: List[str]) -> str:
 def extract_email(html: str) -> str:
     return pick_best_email(extract_emails(html))
 
+def contact_like_url(url: str) -> bool:
+    low = (url or "").lower()
+    return any(k in low for k in ["contact", "support", "help", "business", "partnership", "partner", "inquiry", "enquiry"])
+
+def bad_form_context(url: str, html: str = "") -> bool:
+    low = ((url or "") + " " + (html or "")[:25000]).lower()
+    return any(k in low for k in ["newsletter", "subscribe", "signup", "sign-up", "waitlist", "early-access", "notify me", "updates"])
+
 def detect_contact_form(html: str, page_url: str, links: List[str]) -> Tuple[str, str]:
     if not CONTACT_FORM_SCAN:
         return "", ""
+    low = html.lower()
+    if contact_like_url(page_url) and not bad_form_context(page_url, html):
+        if "<form" in low and any(k in low for k in ["message", "your message", "contact us", "get in touch", "business inquiries", "support request", "partnership"]):
+            m = re.search(r"<form[^>]+action=[\"']([^\"']+)[\"']", html, re.I)
+            action = normalize_url(urljoin(page_url, unescape(m.group(1).strip()))) if m else page_url
+            if contact_like_url(action) or contact_like_url(page_url):
+                return action, "strict_html_contact_form"
+    for u in links:
+        lu = u.lower()
+        if bad_form_context(lu):
+            continue
+        if contact_like_url(lu) and any(platform in lu for platform in FORM_PLATFORMS):
+            return u, "strict_form_platform"
+    return "", ""
     low = html.lower()
     if "<form" in low and any(k in low for k in ["contact", "message", "email", "name", "submit", "inquiry", "partnership"]):
         m = re.search(r"<form[^>]+action=[\"']([^\"']+)[\"']", html, re.I)
@@ -263,15 +344,23 @@ def candidate_enrichment_urls(home_url: str, homepage_html: str, homepage_links:
     base = normalize_url(home_url)
     parsed = urlparse(base)
     root = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else base
+    root_domain = parsed.netloc.lower().replace("www.", "")
+
     urls = [base]
     urls += [normalize_url(urljoin(root, p)) for p in CONTACT_PATHS]
-    important_needles = ["contact", "about", "team", "support", "docs", "whitepaper", "links", "linktree", "discord", "community", "partnership"]
+
     for u in homepage_links:
         lu = u.lower()
-        if any(n in lu for n in important_needles):
-            # stay lightweight: prioritize same-domain + known profile hubs
-            if urlparse(u).netloc == parsed.netloc or any(h in lu for h in ["linktr.ee", "linktree", "bio.link", "beacons.ai", "carrd.co"]):
+        if any(n in lu for n in CONTACT_HINTS) or any(h in lu for h in PROFILE_HUBS):
+            if same_domain_or_hub(u, root_domain):
                 urls.append(u)
+
+    for raw in re.findall(r'https?://[^\s\\"\'<>]+', homepage_html, re.I):
+        u = normalize_url(raw.strip().rstrip(".,);]"))
+        lu = u.lower()
+        if valid_url(u) and not is_blocked_website(u) and (same_domain_or_hub(u, root_domain) or any(n in lu for n in CONTACT_HINTS)):
+            urls.append(u)
+
     return unique_keep_order(urls)[:max(1, ENRICHMENT_MAX_PAGES)]
 
 def extract_favicon(html: str, base_url: str) -> str:
@@ -280,7 +369,7 @@ def extract_favicon(html: str, base_url: str) -> str:
     p = urlparse(base_url)
     return f"{p.scheme}://{p.netloc}/favicon.ico" if p.scheme and p.netloc else ""
 def enrich_from_website(t: TokenCandidate) -> TokenCandidate:
-    if not t.website or not valid_url(normalize_url(t.website)):
+    if not t.website or not valid_project_website(normalize_url(t.website)):
         return t
 
     home_html, final_url = http_get_html(t.website, timeout=ENRICHMENT_TIMEOUT)
@@ -326,6 +415,19 @@ def enrich_from_website(t: TokenCandidate) -> TokenCandidate:
         elif title and "Website title detected:" not in t.analysis_notes:
             t.analysis_notes += f" Website title detected: {title[:160]}"
 
+        time.sleep(0.15)
+
+    preliminary_links = unique_keep_order(home_links + all_links)
+    hub_links = [u for u in preliminary_links if any(h in u.lower() for h in PROFILE_HUBS)]
+    for hub in hub_links[:2]:
+        html, final = http_get_html(hub, timeout=ENRICHMENT_TIMEOUT)
+        if not html:
+            continue
+        pages_scanned += 1
+        sources.append(final or hub)
+        hub_extracted = extract_links(html, final or hub)
+        all_links.extend(hub_extracted)
+        all_emails.extend(extract_emails(html))
         time.sleep(0.15)
 
     links = unique_keep_order(home_links + all_links)
@@ -471,7 +573,7 @@ def gecko_candidate(pool: Dict[str,Any], inc: Dict[str,Dict[str,Any]], network: 
     )
 def source_gecko_new_pools() -> List[TokenCandidate]:
     out = []
-    headers = {"Accept":"application/json;version=20230302","User-Agent":"CryptalystsPrimePulse/8.0"}
+    headers = {"Accept":"application/json;version=20230302","User-Agent":"CryptalystsPrimePulse/9.0"}
     for network in GECKO_NETWORKS:
         data = http_get_json(f"https://api.geckoterminal.com/api/v2/networks/{network}/new_pools?include=base_token,quote_token", headers=headers)
         if isinstance(data, dict):
@@ -648,6 +750,34 @@ def compute_ai_visibility_score(t: TokenCandidate) -> int:
         base += 3
     return max(0, min(100, base))
 
+def compute_contact_reachability(t: TokenCandidate) -> int:
+    score = 0
+    if t.email:
+        local = t.email.split("@")[0].lower()
+        if any(x in local for x in ["partnership", "business", "marketing", "growth", "founder", "bizdev"]):
+            score += 45
+        elif any(x in local for x in ["hello", "contact", "team"]):
+            score += 35
+        elif "support" in local:
+            score += 25
+        else:
+            score += 20
+    if t.contact_form_url:
+        score += 20
+    if t.telegram:
+        score += 15
+    if t.discord:
+        score += 12
+    if t.twitter:
+        score += 8
+    if t.linktree_url:
+        score += 5
+    if t.docs_url:
+        score += 4
+    if t.github:
+        score += 3
+    return max(0, min(100, score))
+
 def compute_business_scores(t: TokenCandidate) -> TokenCandidate:
     # Lead score = commercial contact + seriousness.
     lead = 0
@@ -699,6 +829,8 @@ def compute_business_scores(t: TokenCandidate) -> TokenCandidate:
     t.project_category = classify_project_category(t)
     t.ai_visibility_score = compute_ai_visibility_score(t)
     t.indexed_keywords = build_indexed_keywords(t)
+    t.contact_reachability_score = compute_contact_reachability(t)
+    t.best_contact_route = t.outreach_route
     t.auto_tags = build_auto_tags(t) + ", " + t.project_category.lower()
     return t
 
@@ -774,6 +906,8 @@ def publish(t: TokenCandidate) -> Tuple[bool,str]:
         "discovered_emails":t.discovered_emails,
         "enrichment_pages_scanned":t.enrichment_pages_scanned,
         "enrichment_sources":t.enrichment_sources,
+        "contact_reachability_score":t.contact_reachability_score,
+        "best_contact_route":t.best_contact_route,
     }
     res = http_post_json(WP_API_URL, payload, auth=(WP_USERNAME, WP_APP_PASSWORD))
     if not res:
@@ -840,17 +974,17 @@ def process(candidates):
     print(f"[SUMMARY] published={published} skipped={skipped}")
 def run_once():
     print("============================================================")
-    print("PrimePulse / Cryptalysts Discovery Engine v0.8")
+    print("PrimePulse / Cryptalysts Discovery Engine v0.9 Real Contact Discovery")
     print(f"UTC: {datetime.now(timezone.utc).isoformat()}")
     print(f"Min liquidity: ${MIN_LIQUIDITY_USD:,.0f}")
     print(f"Max age: {MAX_AGE_MINUTES} minutes")
     print(f"Min quality: {MIN_QUALITY_SCORE}/100")
-    print("Sources: DexScreener + GeckoTerminal + Deep website/contact enrichment + CRM scoring")
+    print("Sources: DexScreener + GeckoTerminal + Real Contact Discovery v1 + CRM scoring")
     print("============================================================")
     process(collect())
 def main():
     if RUN_ONCE: run_once(); return
-    send_telegram("✅ <b>PrimePulse Discovery Engine v0.8 ACTIVE</b>")
+    send_telegram("✅ <b>PrimePulse Discovery Engine v0.9 ACTIVE</b>")
     while True:
         try: run_once()
         except Exception as e: print(f"[LOOP ERROR] {e}")
